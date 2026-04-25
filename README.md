@@ -1,4 +1,4 @@
-# JankenCamera
+# JankenCamera: Bare metal HDR pipeline on Raspberry Pi
 
 **Justin Wu** (justinyw)
 
