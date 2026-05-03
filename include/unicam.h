@@ -97,7 +97,6 @@ bool unicam_configure(UniCamConfig* cfg);
 bool unicam_start();
 void unicam_stop();
 bool unicam_wait_frame();
-void unicam_set_buffer(uint8_t* buf, uint32_t size);
 void unicam_set_triple_buffer(uint8_t* buf0, uint8_t* buf1, uint8_t* buf2, uint32_t size);
 uint8_t* unicam_get_ready_buffer();
 void unicam_release_buffer();

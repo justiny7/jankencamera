@@ -121,11 +121,6 @@ bool unicam_configure(UniCamConfig* cfg) {
     return true;
 }
 
-void unicam_set_buffer(uint8_t* buf, uint32_t size) {
-    g_cfg.buffer = buf;
-    g_cfg.buffer_size = size;
-}
-
 void unicam_set_triple_buffer(uint8_t* buf0, uint8_t* buf1, uint8_t* buf2, uint32_t size) {
     g_buffers[0] = buf0;
     g_buffers[1] = buf1;
