@@ -4,7 +4,7 @@ LD      = arm-none-eabi-ld
 OBJCOPY = arm-none-eabi-objcopy
 
 # submodule
-RPI_OS_DIR = ext/rpi_os
+RPI_OS_DIR = rpi_os
 RPI_OS_INC = $(RPI_OS_DIR)/include
 RPI_OS_LIB = $(RPI_OS_DIR)/build/librpi_os.a
 LINKER_SCRIPT = $(RPI_OS_DIR)/linker.ld
