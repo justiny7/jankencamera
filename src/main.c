@@ -10,6 +10,11 @@
 static void debayer(uint16_t* bayer, uint32_t* rgb, uint32_t w, uint32_t h, 
                     uint32_t in_stride_bytes, uint32_t out_stride_pixels) {
     uint32_t stride = in_stride_bytes / 2;
+    // printk("stride: %d\nout stride: %d\n", stride, out_stride_pixels);
+    
+    uint32_t ravg = 0;
+    uint32_t gavg = 0;
+    uint32_t bavg = 0;
     
     for (uint32_t y = 1; y < h - 1; y++) {
         for (uint32_t x = 1; x < w - 1; x++) {
@@ -46,8 +51,22 @@ static void debayer(uint16_t* bayer, uint32_t* rgb, uint32_t w, uint32_t h,
             if (b > 255) b = 255;
 
             rgb[y * out_stride_pixels + x] = (r << 16) | (g << 8) | b;
+
+            /*
+            ravg += r;
+            bavg += b;
+            gavg += g;
+            */
         }
     }
+
+    /*
+    ravg /= w * h;
+    gavg /= w * h;
+    bavg /= w * h;
+    uint32_t tavg = (ravg + gavg + bavg) / 3;
+    printk("r: %d\ng: %d\nb: %d\ntot: %d\n", ravg, gavg, bavg, tavg);
+    */
 }
 
 void main() {
@@ -71,9 +90,10 @@ void main() {
     }
 
     // camera_set_exposure(880);
-    camera_set_exposure(15000);
-    camera_set_gain(180);
-    // camera_set_gain(800);
+    camera_set_exposure(3200);
+    // camera_set_gain(180);
+    camera_set_analog_gain(116);
+    camera_set_digital_gain(2175);
 
     if (!camera_start()) {
         printk("camera start failed\n");

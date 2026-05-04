@@ -7,6 +7,7 @@
 
 #define UNICAM_BASE     (0x20801000 | KERNEL_VBASE)  // CSI1 for camera port
 #define CAM_CLK_BASE    (0x20101000 | KERNEL_VBASE)  // Clock manager for CSI
+#define MBOX_TAG_UNICAM 0x38030
 
 #define UNICAM_CTRL     0x000
 #define UNICAM_STA      0x004
@@ -87,17 +88,16 @@ typedef struct {
     uint32_t height;
     uint32_t stride;
     uint8_t depth;
-    uint8_t* buffer;
+    uint8_t* buffers[3];
     uint32_t buffer_size;
-} UniCamConfig;
+} UnicamConfig;
 
 bool unicam_init();
 void unicam_deinit();
-bool unicam_configure(UniCamConfig* cfg);
+bool unicam_configure(UnicamConfig* cfg);
 bool unicam_start();
 void unicam_stop();
 bool unicam_wait_frame();
-void unicam_set_triple_buffer(uint8_t* buf0, uint8_t* buf1, uint8_t* buf2, uint32_t size);
 uint8_t* unicam_get_ready_buffer();
 void unicam_release_buffer();
 

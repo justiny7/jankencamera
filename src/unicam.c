@@ -1,8 +1,11 @@
 #include "unicam.h"
 #include "lib.h"
+#include "interrupt.h"
 #include "mailbox_interface.h"
 #include "sys_timer.h"
 #include "mmu.h"
+
+#include <stddef.h>
 
 #define UNICAM_REG(off) (UNICAM_BASE + (off))
 #define CM_CAM1CTL      (CAM_CLK_BASE + 0x48)
@@ -10,28 +13,33 @@
 #define CM_PASSWD       0x5A000000
 #define CSI1_CLKGATE    (0x20802004 | KERNEL_VBASE)
 
-static UniCamConfig g_cfg;
+#define TIMEOUT 1000000
+
+static UnicamConfig g_cfg;
 static bool g_active = false;
 
 #define NUM_CAM_BUFFERS 3
-static uint8_t* g_buffers[NUM_CAM_BUFFERS];
-static uint32_t g_buffer_size = 0;
 static int g_write_idx = 0;
 static int g_ready_idx = -1;
 
-static void switch_dma_buffer(int idx) {
-    uint32_t dma_addr = __pa((uintptr_t)g_buffers[idx]);
-    PUT32(UNICAM_REG(UNICAM_IBSA0), dma_addr);
-    PUT32(UNICAM_REG(UNICAM_IBEA0), dma_addr + g_buffer_size);
-}
+extern uint32_t irq_ptr;
 
-static bool start_cam_clock() {
+static void switch_dma_buffer(int idx) {
+    uint32_t dma_addr = __pa(g_cfg.buffers[idx]);
+    PUT32(UNICAM_REG(UNICAM_IBSA0), dma_addr);
+    PUT32(UNICAM_REG(UNICAM_IBEA0), dma_addr + g_cfg.buffer_size);
+}
+static bool start_cam_clock() { // set CAM1 clock to 100MHz
     mem_barrier_dsb();
+
+    // reset clock & wait for busy bit
     PUT32(CM_CAM1CTL, CM_PASSWD | (1 << 5));
-    for (int i = 0; i < 100000 && (GET32(CM_CAM1CTL) & (1 << 7)); i++) {}
+    for (int i = 0; i < TIMEOUT && (GET32(CM_CAM1CTL) & (1 << 7)); i++);
+
+    // set divider to 5 and source to PLLD (fixed 500MHz)
     PUT32(CM_CAM1DIV, CM_PASSWD | (5 << 12));
     PUT32(CM_CAM1CTL, CM_PASSWD | (1 << 4) | 6);
-    for (int i = 0; i < 100000; i++) {
+    for (int i = 0; i < TIMEOUT; i++) {
         if (GET32(CM_CAM1CTL) & (1 << 7)) {
             printk("unicam: CAM1 clock started\n");
             mem_barrier_dsb();
@@ -41,7 +49,6 @@ static bool start_cam_clock() {
     printk("unicam: CAM1 clock failed\n");
     return false;
 }
-
 static void set_field(uint32_t* val, uint32_t field, uint32_t mask) {
     uint32_t m = mask;
     while (m && !(m & 1)) {
@@ -50,48 +57,26 @@ static void set_field(uint32_t* val, uint32_t field, uint32_t mask) {
     }
     *val = (*val & ~mask) | (field & mask);
 }
-
 static void write_field(uint32_t reg, uint32_t field, uint32_t mask) {
     uint32_t v = GET32(reg);
     set_field(&v, field, mask);
     PUT32(reg, v);
 }
-
 static bool set_power(bool on) {
-    uint32_t __attribute__((aligned(16))) msg[8];
-    
-    msg[0] = sizeof(msg);
-    msg[1] = MBOX_REQUEST;
-    msg[2] = 0x00038030;  // SET_DOMAIN_STATE
-    msg[3] = 8;
-    msg[4] = 8;
-    msg[5] = 13;  // DOMAIN_ID_UNICAM0
-    msg[6] = on ? 1 : 0;
-    msg[7] = 0;
-    mbox_get_property(msg);
-    
-    msg[0] = sizeof(msg);
-    msg[1] = MBOX_REQUEST;
-    msg[2] = 0x00038030;
-    msg[3] = 8;
-    msg[4] = 8;
-    msg[5] = 14;  // DOMAIN_ID_UNICAM1
-    msg[6] = on ? 1 : 0;
-    msg[7] = 0;
-    mbox_get_property(msg);
+    assert(mbox_get_property_batch(5,
+        MBOX_TAG_UNICAM, 8, 8, 14, (on ? 1 : 0)
+    ), "Unicam mailbox command failed");
     
     if (on) {
         mbox_set_clock_rate(MBOX_CLK_ISP, 250000000);
     }
     return true;
 }
-
 static void clock_write(uint32_t lanes) {
     mem_barrier_dsb();
     PUT32(CSI1_CLKGATE, CM_PASSWD | lanes);
     mem_barrier_dsb();
 }
-
 static void stop_cam_clock() {
     mem_barrier_dsb();
     PUT32(CM_CAM1CTL, CM_PASSWD | (1 << 5));
@@ -99,11 +84,51 @@ static void stop_cam_clock() {
     mem_barrier_dsb();
 }
 
+volatile bool frame_done;
+void __attribute__((interrupt("IRQ"))) unicam_irq_handler() {
+    // check pending interrupt on CAM1
+    if (GET32(IRQ_PENDING_2) & (1U << (CAM1_INT - 32))) {
+        if (!g_active) return;
+
+        mem_barrier_dsb();
+        uint32_t sta = GET32(UNICAM_REG(UNICAM_STA));
+        uint32_t ista = GET32(UNICAM_REG(UNICAM_ISTA));
+        if (!(sta & (UNICAM_IS | UNICAM_PI0))) return;
+
+        if (ista & UNICAM_FSI) {
+            int next_idx = (g_write_idx + 1) % NUM_CAM_BUFFERS;
+            if (next_idx != g_ready_idx) {
+                switch_dma_buffer(g_write_idx = next_idx);
+            }
+            PUT32(UNICAM_REG(UNICAM_ISTA), UNICAM_FSI);
+        }
+        if ((ista & UNICAM_FEI) || (sta & UNICAM_PI0)) {
+            // clear IRQs
+            PUT32(UNICAM_REG(UNICAM_STA), sta);
+            PUT32(UNICAM_REG(UNICAM_ISTA), ista);
+
+            frame_done = true;
+            g_ready_idx = g_write_idx;
+            mmu_flush_dcache();
+        }
+        mem_barrier_dsb();
+    }
+}
+
 bool unicam_init() {
     if (!set_power(true)) {
         return false;
     }
     sys_timer_delay_us(1000);
+
+    // enable CAM1 interrupts
+    mem_barrier_dsb();
+    PUT32(IRQ_ENABLE_2, 1U << (CAM1_INT - 32));
+    mem_barrier_dsb();
+
+    // install interrupt handler
+    irq_ptr = (uint32_t) unicam_irq_handler;
+
     return true;
 }
 
@@ -112,29 +137,21 @@ void unicam_deinit() {
     set_power(false);
 }
 
-bool unicam_configure(UniCamConfig* cfg) {
-    if (!cfg || !cfg->buffer) return false;
+bool unicam_configure(UnicamConfig* cfg) {
+    if (!cfg) return false;
+
     g_cfg = *cfg;
     if (g_cfg.stride == 0) {
         g_cfg.stride = (g_cfg.width * (g_cfg.depth == 10 ? 2 : 1) + 31) & ~31;
     }
+    g_write_idx = 0;
+    g_ready_idx = -1;
+
     return true;
 }
 
-void unicam_set_triple_buffer(uint8_t* buf0, uint8_t* buf1, uint8_t* buf2, uint32_t size) {
-    g_buffers[0] = buf0;
-    g_buffers[1] = buf1;
-    g_buffers[2] = buf2;
-    g_buffer_size = size;
-    g_write_idx = 0;
-    g_ready_idx = -1;
-}
-
 uint8_t* unicam_get_ready_buffer() {
-    if (g_ready_idx >= 0) {
-        return g_buffers[g_ready_idx];
-    }
-    return 0;
+    return (g_ready_idx >= 0) ? g_cfg.buffers[g_ready_idx] : NULL;
 }
 
 void unicam_release_buffer() {
@@ -219,10 +236,6 @@ bool unicam_start() {
 
     PUT32(UNICAM_REG(UNICAM_IBLS), g_cfg.stride);
 
-    uint32_t dma_addr = __pa((uintptr_t)g_cfg.buffer) | 0x40000000;
-    PUT32(UNICAM_REG(UNICAM_IBSA0), dma_addr);
-    PUT32(UNICAM_REG(UNICAM_IBEA0), dma_addr + g_cfg.buffer_size);
-
     uint32_t unpack = (g_cfg.depth == 10) ? UNICAM_PUM_UNPACK10 : UNICAM_PUM_NONE;
     uint32_t pack = (g_cfg.depth == 10) ? UNICAM_PPM_PACK16 : UNICAM_PPM_NONE;
     uint32_t ipipe = 0;
@@ -247,6 +260,7 @@ bool unicam_start() {
     sys_timer_delay_us(10000);
     
     g_active = true;
+    printk("done init\n");
     return true;
 }
 
@@ -270,32 +284,7 @@ void unicam_stop() {
 }
 
 bool unicam_wait_frame() {
-    if (!g_active) return false;
-
-    for (uint32_t timeout = 0; timeout < 1000000; timeout++) {
-        uint32_t sta = GET32(UNICAM_REG(UNICAM_STA));
-        uint32_t ista = GET32(UNICAM_REG(UNICAM_ISTA));
-
-        // frame start - switch to next buffer
-        if (ista & UNICAM_FSI) {
-            int next_idx = (g_write_idx + 1) % NUM_CAM_BUFFERS;
-            if (next_idx != g_ready_idx || g_ready_idx == -1) {
-                switch_dma_buffer(next_idx);
-                g_write_idx = next_idx;
-            }
-            PUT32(UNICAM_REG(UNICAM_ISTA), UNICAM_FSI);
-        }
-
-        // frame end - mark buffer ready
-        if ((ista & UNICAM_FEI) || (sta & UNICAM_PI0)) {
-            PUT32(UNICAM_REG(UNICAM_STA), sta);
-            PUT32(UNICAM_REG(UNICAM_ISTA), ista);
-            g_ready_idx = g_write_idx;
-            mmu_flush_dcache();
-            return true;
-        }
-    }
-    
-    printk("unicam: timeout\n");
-    return false;
+    frame_done = false;
+    while (!frame_done);
+    return true;
 }

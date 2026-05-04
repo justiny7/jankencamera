@@ -4,7 +4,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define IMX219_I2C_ADDR         0x10
 #define IMX219_CHIP_ID          0x0219
 
 // Registers
@@ -18,6 +17,9 @@
 #define IMX219_ORIENTATION      0x0172
 #define IMX219_TEST_PATTERN     0x0600
 
+// HBlank control ranges
+#define IMX219_PPL_MIN          3448
+
 // Mode values
 #define IMX219_MODE_STANDBY     0x00
 #define IMX219_MODE_STREAMING   0x01
@@ -29,6 +31,13 @@
 #define IMX219_GAIN_MAX         232
 #define IMX219_DGAIN_MIN        0x100
 #define IMX219_DGAIN_MAX        0xFFF
+
+// Pins + I2C
+#define IMX219_PWR_PIN          44
+#define IMX219_I2C_ADDR         0x10
+#define IMX219_I2C_SDA          28
+#define IMX219_I2C_SCL          29
+#define IMX219_I2C_HZ           100000
 
 typedef enum {
     IMX219_MODE_640x480,

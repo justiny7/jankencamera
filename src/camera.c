@@ -50,16 +50,17 @@ bool camera_set_format(uint32_t width, uint32_t height, CameraFormat fmt) {
     g_config.width = info.width;
     g_config.height = info.height;
     g_config.format = fmt;
+    // depth = 10 -> uint16 = 2 bytes per row, rounded to nearest 32
     g_config.stride = (info.width * (depth == 10 ? 2 : 1) + 31) & ~31;
 
     uint32_t frame_size = g_config.stride * g_config.height;
     
-    UniCamConfig ucfg = {
+    UnicamConfig ucfg = {
         .width = g_config.width,
         .height = g_config.height,
         .stride = g_config.stride,
         .depth = depth,
-        .buffer = g_frame_buf0,
+        .buffers = { g_frame_buf0, g_frame_buf1, g_frame_buf2 },
         .buffer_size = frame_size,
     };
 
@@ -67,9 +68,6 @@ bool camera_set_format(uint32_t width, uint32_t height, CameraFormat fmt) {
         printk("camera: unicam configure failed\n");
         return false;
     }
-    
-    // register triple buffers
-    unicam_set_triple_buffer(g_frame_buf0, g_frame_buf1, g_frame_buf2, frame_size);
 
     printk("camera: format %dx%d stride=%d\n",
            g_config.width, g_config.height, g_config.stride);
@@ -131,15 +129,15 @@ void camera_release_frame(CameraFrame* frame) {
 bool camera_set_exposure(uint32_t value) {
     return imx219_set_exposure(value);
 }
-
-bool camera_set_gain(uint32_t value) {
+bool camera_set_analog_gain(uint32_t value) {
     return imx219_set_gain(value);
 }
-
+bool camera_set_digital_gain(uint32_t value) {
+    return imx219_set_digital_gain(value);
+}
 bool camera_set_vflip(bool enable) {
     return imx219_set_vflip(enable);
 }
-
 bool camera_set_hflip(bool enable) {
     return imx219_set_hflip(enable);
 }
