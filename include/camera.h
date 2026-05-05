@@ -17,9 +17,21 @@ typedef struct {
 } CameraConfig;
 
 typedef struct {
+    CameraConfig cfg;
+
+    uint32_t exposure;  // microseconds
+    float gain;         // total gain multiplier
+    float ana_gain;     // analog gain
+    float dig_gain;     // digital gain
+    uint32_t white_bal;
+} CameraShot;
+
+typedef struct {
     uint8_t* data;
     uint32_t size;
     uint32_t sequence;
+
+    CameraShot shot;
 } CameraFrame;
 
 bool camera_init();
@@ -30,11 +42,13 @@ bool camera_start();
 void camera_stop();
 
 bool camera_capture_frame(CameraFrame* frame);
+bool camera_capture_frame_shot(CameraFrame* frame, CameraShot shot);
 void camera_release_frame(CameraFrame* frame);
 
-bool camera_set_exposure(uint32_t value);
-bool camera_set_analog_gain(uint32_t value);
-bool camera_set_digital_gain(uint32_t value);
+bool camera_set_exposure(uint32_t us);
+bool camera_set_gain(float gain);
+bool camera_set_analog_gain(float ana_gain);
+bool camera_set_digital_gain(float dig_gain);
 bool camera_set_vflip(bool enable);
 bool camera_set_hflip(bool enable);
 

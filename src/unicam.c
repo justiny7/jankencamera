@@ -8,6 +8,8 @@
 #include <stddef.h>
 
 #define UNICAM_REG(off) (UNICAM_BASE + (off))
+
+// TODO: make GPIO clock in rpi_os
 #define CM_CAM1CTL      (CAM_CLK_BASE + 0x48)
 #define CM_CAM1DIV      (CAM_CLK_BASE + 0x4C)
 #define CM_PASSWD       0x5A000000
@@ -22,13 +24,13 @@ static bool g_active = false;
 static int g_write_idx = 0;
 static int g_ready_idx = -1;
 
-extern uint32_t irq_ptr;
+#define SWITCH_DMA_BUF(addr) \
+    do { \
+        uint32_t dma_addr = __pa(addr); \
+        PUT32(UNICAM_REG(UNICAM_IBSA0), dma_addr); \
+        PUT32(UNICAM_REG(UNICAM_IBEA0), dma_addr + g_cfg.buffer_size); \
+    } while(0)
 
-static void switch_dma_buffer(int idx) {
-    uint32_t dma_addr = __pa(g_cfg.buffers[idx]);
-    PUT32(UNICAM_REG(UNICAM_IBSA0), dma_addr);
-    PUT32(UNICAM_REG(UNICAM_IBEA0), dma_addr + g_cfg.buffer_size);
-}
 static bool start_cam_clock() { // set CAM1 clock to 100MHz
     mem_barrier_dsb();
 
@@ -80,11 +82,11 @@ static void clock_write(uint32_t lanes) {
 static void stop_cam_clock() {
     mem_barrier_dsb();
     PUT32(CM_CAM1CTL, CM_PASSWD | (1 << 5));
-    while (GET32(CM_CAM1CTL) & (1 << 7)) {}
+    while (GET32(CM_CAM1CTL) & (1 << 7));
     mem_barrier_dsb();
 }
 
-volatile bool frame_done;
+volatile bool g_frame_done;
 void __attribute__((interrupt("IRQ"))) unicam_irq_handler() {
     // check pending interrupt on CAM1
     if (GET32(IRQ_PENDING_2) & (1U << (CAM1_INT - 32))) {
@@ -93,24 +95,30 @@ void __attribute__((interrupt("IRQ"))) unicam_irq_handler() {
         mem_barrier_dsb();
         uint32_t sta = GET32(UNICAM_REG(UNICAM_STA));
         uint32_t ista = GET32(UNICAM_REG(UNICAM_ISTA));
+
+        // clear interrupts
+        PUT32(UNICAM_REG(UNICAM_STA), sta);
+        PUT32(UNICAM_REG(UNICAM_ISTA), ista);
+
         if (!(sta & (UNICAM_IS | UNICAM_PI0))) return;
+
+        if ((ista & UNICAM_FEI) || (sta & UNICAM_PI0)) {
+            // only switch ready frame if waiting for a frame
+            if (!g_frame_done) {
+                g_ready_idx = g_write_idx;
+                g_frame_done = true;
+            }
+            mmu_flush_dcache();
+        }
 
         if (ista & UNICAM_FSI) {
             int next_idx = (g_write_idx + 1) % NUM_CAM_BUFFERS;
             if (next_idx != g_ready_idx) {
-                switch_dma_buffer(g_write_idx = next_idx);
+                SWITCH_DMA_BUF(g_cfg.buffers[g_write_idx = next_idx]);
             }
-            PUT32(UNICAM_REG(UNICAM_ISTA), UNICAM_FSI);
+            // TODO: dummy fallback? better buffer system?
         }
-        if ((ista & UNICAM_FEI) || (sta & UNICAM_PI0)) {
-            // clear IRQs
-            PUT32(UNICAM_REG(UNICAM_STA), sta);
-            PUT32(UNICAM_REG(UNICAM_ISTA), ista);
 
-            frame_done = true;
-            g_ready_idx = g_write_idx;
-            mmu_flush_dcache();
-        }
         mem_barrier_dsb();
     }
 }
@@ -127,6 +135,7 @@ bool unicam_init() {
     mem_barrier_dsb();
 
     // install interrupt handler
+    extern uint32_t irq_ptr;
     irq_ptr = (uint32_t) unicam_irq_handler;
 
     return true;
@@ -181,17 +190,17 @@ bool unicam_start() {
     uint32_t ctrl = GET32(UNICAM_REG(UNICAM_CTRL));
     set_field(&ctrl, 0, 1 << 3);
     set_field(&ctrl, 0, 1 << 5);
-    set_field(&ctrl, 0xf, 0xF00);
+    set_field(&ctrl, 0xF, 0xF00);
     set_field(&ctrl, 128, 0x1FF000);
     PUT32(UNICAM_REG(UNICAM_CTRL), ctrl);
 
-    PUT32(UNICAM_REG(0x120), 0);
-    PUT32(UNICAM_REG(0x128), 0);
+    PUT32(UNICAM_REG(UNICAM_IHWIN), 0);
+    PUT32(UNICAM_REG(UNICAM_IVWIN), 0);
 
     uint32_t pri = GET32(UNICAM_REG(UNICAM_PRI));
     set_field(&pri, 0, 0x30000);
     set_field(&pri, 0, 0xF000);
-    set_field(&pri, 0xe, 0xF00);
+    set_field(&pri, 0xE, 0xF00);
     set_field(&pri, 8, 0xF0);
     set_field(&pri, 2, 0x6);
     set_field(&pri, 1, 0x1);
@@ -236,6 +245,8 @@ bool unicam_start() {
 
     PUT32(UNICAM_REG(UNICAM_IBLS), g_cfg.stride);
 
+    SWITCH_DMA_BUF(g_cfg.dummy_buffer);
+
     uint32_t unpack = (g_cfg.depth == 10) ? UNICAM_PUM_UNPACK10 : UNICAM_PUM_NONE;
     uint32_t pack = (g_cfg.depth == 10) ? UNICAM_PPM_PACK16 : UNICAM_PPM_NONE;
     uint32_t ipipe = 0;
@@ -251,7 +262,7 @@ bool unicam_start() {
     set_field(&misc, 1, UNICAM_FL1);
     PUT32(UNICAM_REG(UNICAM_MISC), misc);
 
-    PUT32(UNICAM_REG(0x200), 0);
+    PUT32(UNICAM_REG(UNICAM_DCS), 0);
 
     write_field(UNICAM_REG(UNICAM_CTRL), 1, UNICAM_CPE);
     write_field(UNICAM_REG(UNICAM_ICTL), 1, 0x60);
@@ -284,7 +295,8 @@ void unicam_stop() {
 }
 
 bool unicam_wait_frame() {
-    frame_done = false;
-    while (!frame_done);
-    return true;
+    g_frame_done = false;
+    while (!g_frame_done);
+    // printk("got frame %d\n", g_ready_idx);
+    return g_frame_done;
 }

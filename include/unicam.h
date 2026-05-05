@@ -26,6 +26,9 @@
 #define UNICAM_IBSA0    0x110
 #define UNICAM_IBEA0    0x114
 #define UNICAM_IBLS     0x118
+#define UNICAM_IHWIN    0x120
+#define UNICAM_IVWIN    0x128
+#define UNICAM_DCS      0x200
 #define UNICAM_MISC     0x400
 
 // CTRL register bits
@@ -88,7 +91,9 @@ typedef struct {
     uint32_t height;
     uint32_t stride;
     uint8_t depth;
+
     uint8_t* buffers[3];
+    uint8_t* dummy_buffer;
     uint32_t buffer_size;
 } UnicamConfig;
 

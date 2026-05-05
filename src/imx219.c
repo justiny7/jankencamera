@@ -160,7 +160,8 @@ bool imx219_set_mode(IMX219Mode mode, uint8_t depth) {
     if (!write_regs(depth == 10 ? regs_raw10 : regs_raw8)) return false;
 
     // Set VBlank and HBlank (align with vts_def)
-    if (!write_reg16(IMX219_VTS, g_mode.vts_def / g_mode.rate_factor)) return false;
+    // if (!write_reg16(IMX219_VTS, g_mode.vts_def / g_mode.rate_factor)) return false;
+    if (!write_reg16(IMX219_VTS, g_mode.vts_def)) return false;
     if (!write_reg16(IMX219_HTS, IMX219_PPL_MIN)) return false;
 
     return true;
@@ -204,6 +205,7 @@ bool imx219_start_streaming() {
     read_reg16(IMX219_EXPOSURE, &exposure);
     read_reg(IMX219_ANALOG_GAIN, &gain);
     printk("exposure: %d\ngain: %d\n", exposure, gain);
+
     return true;
 }
 
@@ -214,37 +216,45 @@ void imx219_stop_streaming() {
 bool imx219_set_exposure(uint16_t lines) {
     return write_reg16(IMX219_EXPOSURE, lines / g_mode.rate_factor);
 }
-
 bool imx219_set_gain(uint8_t gain) {
     if (gain > IMX219_GAIN_MAX) gain = IMX219_GAIN_MAX;
     return write_reg(IMX219_ANALOG_GAIN, gain);
 }
-
 bool imx219_set_digital_gain(uint16_t gain) {
     if (gain < IMX219_DGAIN_MIN) gain = IMX219_DGAIN_MIN;
     if (gain > IMX219_DGAIN_MAX) gain = IMX219_DGAIN_MAX;
     return write_reg16(IMX219_DIGITAL_GAIN, gain);
 }
-
 bool imx219_set_vflip(bool enable) {
-    // TODO: delete this
-    /*
-    uint8_t buf[2], val;
-    buf[0] = IMX219_ORIENTATION >> 8;
-    buf[1] = IMX219_ORIENTATION & 0xFF;
-    if (i2c_send_data(&g_i2c, 2, buf) != I2C_RESULT_OK) return false;
-    if (i2c_receive_data(&g_i2c, 1, &val) != I2C_RESULT_OK) return false;
-    */
-
     uint8_t val;
     if (!read_reg(IMX219_ORIENTATION, &val)) return false;
     val = enable ? (val | 2) : (val & ~2);
     return write_reg(IMX219_ORIENTATION, val);
 }
-
 bool imx219_set_hflip(bool enable) {
     uint8_t val;
     if (!read_reg(IMX219_ORIENTATION, &val)) return false;
     val = enable ? (val | 1) : (val & ~1);
     return write_reg(IMX219_ORIENTATION, val);
+}
+
+uint16_t imx219_get_HTS() {
+    uint16_t res;
+    if (!read_reg16(IMX219_HTS, &res)) return 0;
+    return res;
+}
+uint16_t imx219_get_exposure() {
+    uint16_t res;
+    if (!read_reg16(IMX219_EXPOSURE, &res)) return 0;
+    return res * g_mode.rate_factor;
+}
+uint8_t imx219_get_analog_gain() {
+    uint8_t res;
+    if (!read_reg(IMX219_ANALOG_GAIN, &res)) return 0;
+    return res;
+}
+uint16_t imx219_get_digital_gain() {
+    uint16_t res;
+    if (!read_reg16(IMX219_DIGITAL_GAIN, &res)) return 0;
+    return res;
 }

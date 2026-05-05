@@ -5,6 +5,7 @@
 #include <stdbool.h>
 
 #define IMX219_CHIP_ID          0x0219
+#define IMX219_PIXEL_RATE_MHZ   ((float) 182.4)
 
 // Registers
 #define IMX219_MODE_SELECT      0x0100
@@ -66,5 +67,10 @@ bool imx219_set_gain(uint8_t gain);
 bool imx219_set_digital_gain(uint16_t gain);
 bool imx219_set_vflip(bool enable);
 bool imx219_set_hflip(bool enable);
+
+uint16_t imx219_get_HTS();
+uint16_t imx219_get_exposure();
+uint8_t imx219_get_analog_gain();
+uint16_t imx219_get_digital_gain();
 
 #endif
