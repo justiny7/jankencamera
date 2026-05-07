@@ -160,8 +160,7 @@ bool imx219_set_mode(IMX219Mode mode, uint8_t depth) {
     if (!write_regs(depth == 10 ? regs_raw10 : regs_raw8)) return false;
 
     // Set VBlank and HBlank (align with vts_def)
-    // if (!write_reg16(IMX219_VTS, g_mode.vts_def / g_mode.rate_factor)) return false;
-    if (!write_reg16(IMX219_VTS, g_mode.vts_def)) return false;
+    if (!write_reg16(IMX219_VTS, g_mode.vts_def / g_mode.rate_factor)) return false;
     if (!write_reg16(IMX219_HTS, IMX219_PPL_MIN)) return false;
 
     return true;

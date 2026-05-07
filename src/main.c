@@ -98,7 +98,7 @@ void main() {
     // int expos[] = { 100, 1000, 10000, 100000 };
     // int expos[] = { 1000, 5000, 10000, 50000 };
     float gain[] = { 1.0, 2.0, 4.0, 8.0 };
-    float gain2[] = { 1.0, 8.0, 64.0, 128.0 };
+    float gain2[] = { 4.0, 8.0, 64.0, 128.0 };
     float ag[] = { 1.0, 2.0, 4.0, 8.0 };
     // float dg[] = { 1.0, 2.0, 4.0, 8.0 };
     float dg[] = { 2.0, 4.0, 8.0, 16.0 };
@@ -106,10 +106,13 @@ void main() {
 
     // camera_set_exposure(880);
     // camera_set_exposure(60000);
-    camera_set_exposure(4000);
+    camera_set_exposure(100000);
+    camera_set_gain(4.0);
+    // camera_set_gain(128.0);
+    // camera_set_exposure(4000);
     // camera_set_gain(180);
-    camera_set_analog_gain(8.0);
-    camera_set_digital_gain(1.0);
+    // camera_set_analog_gain(8.0);
+    // camera_set_digital_gain(1.0);
     // camera_set_digital_gain(2175);
 
     if (!camera_start()) {
@@ -125,11 +128,11 @@ void main() {
     while (1) {
         if (camera_capture_frame(&frame)) {
             // printk("got %d\n", sys_timer_get_usec());
-            debayer((uint16_t*)frame.data, display_get_buffer(),
+            debayer((uint16_t*)frame.buf, display_get_buffer(),
                     cfg.width, cfg.height, cfg.stride, disp.pitch / 4);
-            camera_release_frame(&frame);
             display_swap();
         }
+        // printk("$\n");
 
         /*
         if (frame.sequence && frame.sequence % 50 == 0) {
@@ -142,7 +145,6 @@ void main() {
             if (camera_capture_frame_shot(&frame, shot)) {
                 debayer((uint16_t*) frame.data, display_get_buffer(),
                         cfg.width, cfg.height, cfg.stride, disp.pitch / 4);
-                camera_release_frame(&frame);
                 printk("expos: %d\tana gain:%f\tdig gain:%f\n",
                         frame.shot.exposure, frame.shot.ana_gain, frame.shot.dig_gain);
                 display_swap();
@@ -155,7 +157,6 @@ void main() {
             if (camera_capture_frame_shot(&frame, shot)) {
                 debayer((uint16_t*)frame.data, display_get_buffer(),
                         cfg.width, cfg.height, cfg.stride, disp.pitch / 4);
-                camera_release_frame(&frame);
                 printk("expos: %d\tana gain:%f\tdig gain:%f\n",
                         frame.shot.exposure, frame.shot.ana_gain, frame.shot.dig_gain);
                 display_swap();
@@ -180,9 +181,8 @@ void main() {
                     .gain = gain2[c],
                 };
                 if (camera_capture_frame_shot(&frame, shot)) {
-                    debayer((uint16_t*)frame.data, display_get_buffer(),
+                    debayer((uint16_t*)frame.buf, display_get_buffer(),
                             cfg.width, cfg.height, cfg.stride, disp.pitch / 4);
-                    camera_release_frame(&frame);
                     printk("expos: %d\tana gain:%f\tdig gain:%f\n",
                             frame.shot.exposure, frame.shot.ana_gain, frame.shot.dig_gain);
                     display_swap();

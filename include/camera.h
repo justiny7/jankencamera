@@ -1,8 +1,9 @@
 #ifndef CAMERA_H
 #define CAMERA_H
 
-#include <stdint.h>
-#include <stdbool.h>
+#include "camera_buffer.h"
+
+#define NUM_BUFFERS 8
 
 typedef enum {
     CAM_FMT_BAYER_8,
@@ -24,10 +25,11 @@ typedef struct {
     float ana_gain;     // analog gain
     float dig_gain;     // digital gain
     uint32_t white_bal;
+    uint32_t ts;        // timestamp
 } CameraShot;
 
 typedef struct {
-    uint8_t* data;
+    CameraBuffer* buf;
     uint32_t size;
     uint32_t sequence;
 
@@ -43,7 +45,6 @@ void camera_stop();
 
 bool camera_capture_frame(CameraFrame* frame);
 bool camera_capture_frame_shot(CameraFrame* frame, CameraShot shot);
-void camera_release_frame(CameraFrame* frame);
 
 bool camera_set_exposure(uint32_t us);
 bool camera_set_gain(float gain);

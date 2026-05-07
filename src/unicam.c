@@ -20,10 +20,6 @@
 static UnicamConfig g_cfg;
 static bool g_active = false;
 
-#define NUM_CAM_BUFFERS 3
-static int g_write_idx = 0;
-static int g_ready_idx = -1;
-
 #define SWITCH_DMA_BUF(addr) \
     do { \
         uint32_t dma_addr = __pa(addr); \
@@ -86,7 +82,7 @@ static void stop_cam_clock() {
     mem_barrier_dsb();
 }
 
-volatile bool g_frame_done;
+volatile bool g_frame_waiting;
 void __attribute__((interrupt("IRQ"))) unicam_irq_handler() {
     // check pending interrupt on CAM1
     if (GET32(IRQ_PENDING_2) & (1U << (CAM1_INT - 32))) {
@@ -102,21 +98,15 @@ void __attribute__((interrupt("IRQ"))) unicam_irq_handler() {
 
         if (!(sta & (UNICAM_IS | UNICAM_PI0))) return;
 
+        // on frame end interrupt, advance + update DMA buffer
         if ((ista & UNICAM_FEI) || (sta & UNICAM_PI0)) {
-            // only switch ready frame if waiting for a frame
-            if (!g_frame_done) {
-                g_ready_idx = g_write_idx;
-                g_frame_done = true;
-            }
-            mmu_flush_dcache();
-        }
+            camera_buffer_advance(g_frame_waiting);
+            if (g_frame_waiting) g_frame_waiting = false;
 
-        if (ista & UNICAM_FSI) {
-            int next_idx = (g_write_idx + 1) % NUM_CAM_BUFFERS;
-            if (next_idx != g_ready_idx) {
-                SWITCH_DMA_BUF(g_cfg.buffers[g_write_idx = next_idx]);
-            }
-            // TODO: dummy fallback? better buffer system?
+            CameraBuffer* buf = camera_buffer_get_write();
+            SWITCH_DMA_BUF(buf->buf);
+
+            mmu_flush_dcache();
         }
 
         mem_barrier_dsb();
@@ -153,18 +143,8 @@ bool unicam_configure(UnicamConfig* cfg) {
     if (g_cfg.stride == 0) {
         g_cfg.stride = (g_cfg.width * (g_cfg.depth == 10 ? 2 : 1) + 31) & ~31;
     }
-    g_write_idx = 0;
-    g_ready_idx = -1;
 
     return true;
-}
-
-uint8_t* unicam_get_ready_buffer() {
-    return (g_ready_idx >= 0) ? g_cfg.buffers[g_ready_idx] : NULL;
-}
-
-void unicam_release_buffer() {
-    g_ready_idx = -1;
 }
 
 bool unicam_start() {
@@ -245,7 +225,8 @@ bool unicam_start() {
 
     PUT32(UNICAM_REG(UNICAM_IBLS), g_cfg.stride);
 
-    SWITCH_DMA_BUF(g_cfg.dummy_buffer);
+    CameraBuffer* buf = camera_buffer_get_write();
+    SWITCH_DMA_BUF(buf->buf);
 
     uint32_t unpack = (g_cfg.depth == 10) ? UNICAM_PUM_UNPACK10 : UNICAM_PUM_NONE;
     uint32_t pack = (g_cfg.depth == 10) ? UNICAM_PPM_PACK16 : UNICAM_PPM_NONE;
@@ -295,8 +276,6 @@ void unicam_stop() {
 }
 
 bool unicam_wait_frame() {
-    g_frame_done = false;
-    while (!g_frame_done);
-    // printk("got frame %d\n", g_ready_idx);
-    return g_frame_done;
+    for (g_frame_waiting = true; g_frame_waiting; );
+    return true;
 }

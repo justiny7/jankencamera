@@ -2,6 +2,8 @@
 #define UNICAM_H
 
 #include "vm.h"
+#include "camera_buffer.h"
+
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -91,9 +93,6 @@ typedef struct {
     uint32_t height;
     uint32_t stride;
     uint8_t depth;
-
-    uint8_t* buffers[3];
-    uint8_t* dummy_buffer;
     uint32_t buffer_size;
 } UnicamConfig;
 
@@ -103,7 +102,5 @@ bool unicam_configure(UnicamConfig* cfg);
 bool unicam_start();
 void unicam_stop();
 bool unicam_wait_frame();
-uint8_t* unicam_get_ready_buffer();
-void unicam_release_buffer();
 
 #endif

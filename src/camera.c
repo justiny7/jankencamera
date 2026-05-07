@@ -3,15 +3,13 @@
 #include "imx219.h"
 #include "lib.h"
 #include "mailbox_interface.h"
+#include "sys_timer.h"
 
 #define MAX_FRAME_SIZE  (1920 * 1080 * 2)
 #define MHZ             1000000
 
-// three buffers for triple buffering
-static uint8_t __attribute__((aligned(32))) g_frame_buf0[MAX_FRAME_SIZE];
-static uint8_t __attribute__((aligned(32))) g_frame_buf1[MAX_FRAME_SIZE];
-static uint8_t __attribute__((aligned(32))) g_frame_buf2[MAX_FRAME_SIZE];
-static uint8_t __attribute__((aligned(32))) g_dummy_buf[MAX_FRAME_SIZE];
+#define MAX_ANALOG_GAIN (8.0)
+#define SHOT_NUM_FRAMES_DISCARD 4
 
 static CameraConfig g_config;
 static bool g_streaming = false;
@@ -53,6 +51,11 @@ bool camera_init() {
         return false;
     }
 
+    if (!camera_buffer_init(NUM_BUFFERS)) {
+        printk("camera: buffer init failed\n");
+        return false;
+    }
+
     printk("camera: initialized\n");
     return true;
 }
@@ -88,8 +91,6 @@ bool camera_set_format(uint32_t width, uint32_t height, CameraFormat fmt) {
         .height = g_config.height,
         .stride = g_config.stride,
         .depth = depth,
-        .buffers = { g_frame_buf0, g_frame_buf1, g_frame_buf2 },
-        .dummy_buffer = g_dummy_buf,
         .buffer_size = frame_size,
     };
 
@@ -140,11 +141,10 @@ bool camera_capture_frame(CameraFrame* frame) {
 
     if (!unicam_wait_frame()) return false;
 
-    // get buffer that just completed
-    uint8_t* ready_buf = unicam_get_ready_buffer();
+    CameraBuffer* ready_buf = camera_buffer_get_ready();
     if (!ready_buf) return false;
 
-    frame->data = ready_buf;
+    frame->buf = ready_buf;
     frame->size = g_config.stride * g_config.height;
     frame->sequence = g_sequence++;
     return true;
@@ -163,17 +163,17 @@ bool camera_capture_frame_shot(CameraFrame* frame, CameraShot shot) {
     }
 
     // discard 4 frames, get 5th
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < SHOT_NUM_FRAMES_DISCARD + 1; i++) {
         if (!unicam_wait_frame()) {
             return false;
         }
     }
 
-    // get buffer that just completed
-    uint8_t* ready_buf = unicam_get_ready_buffer();
+    CameraBuffer* ready_buf = camera_buffer_get_ready();
+    uint32_t ts = sys_timer_get_usec();
     if (!ready_buf) return false;
 
-    frame->data = ready_buf;
+    frame->buf = ready_buf;
     frame->size = g_config.stride * g_config.height;
     frame->sequence = g_sequence++;
 
@@ -184,15 +184,10 @@ bool camera_capture_frame_shot(CameraFrame* frame, CameraShot shot) {
         .gain = ana_gain * dig_gain,
         .ana_gain = ana_gain,
         .dig_gain = dig_gain,
+        .ts = ts,
     };
     return true;
 }
-
-void camera_release_frame(CameraFrame* frame) {
-    (void) frame;
-    unicam_release_buffer();
-}
-
 
 bool camera_set_exposure(uint32_t us) {
     uint32_t value = us_to_lines(us);
@@ -202,9 +197,9 @@ bool camera_set_exposure(uint32_t us) {
 
 bool camera_set_gain(float gain) {
     float ana_gain = gain, dig_gain = 1.0;
-    if (gain > 8.0) { // max analog gain
-        ana_gain = 8.0;
-        dig_gain = gain / 8.0;
+    if (gain > MAX_ANALOG_GAIN) { // max analog gain
+        ana_gain = MAX_ANALOG_GAIN;
+        dig_gain = gain / MAX_ANALOG_GAIN;
     }
 
     printk("gain: %f\tana gain: %f\tdig gain: %f\n",
