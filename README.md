@@ -62,3 +62,9 @@ I plan on building a bare-metal HDR pipeline on a Raspberry Pi Zero W with a Fra
 
 ## What do I need help with?
 - Advice on selecting appropriate HDR algorithms
+
+---
+
+## Checkpoint 1
+
+Check `checkpoint_1` folder!
