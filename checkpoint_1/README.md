@@ -13,9 +13,9 @@ There are two aspects to this evaluation:
     - I'll measure processing times for each component and peak memory usage
     - There isn't really a fair comparison against real phones/digital cameras since I'm on a resource-constrained device, but I plan to perform ablation studies on optimizations I make to see the speed progression
 - Accuracy
-    - For quantitative accuracy, I'll implement the exact same algorithms on my Mac with full precision and run them on the same RAW Bayer inputs. These images will be my baseline
+    - For quantitative accuracy, I'll implement the exact same algorithms on my Mac with full precision and run them on the same RAW Bayer inputs
         - I'll use PSNR and SSIM metrics to compare the images produced by the Raspberry Pi to Mac's ground truth (since I'll probably be cutting corners on the Pi to make it run fast enough)
-    - For qualitative analysis, I'll use an existing exposure bracketing implementation (e.g. OpenCV) and run the same RAW Bayer inputs. Then, I'll run a survey for how preferable the Pi output is vs. the OpenCV output
+    - For qualitative analysis, I'll use an existing exposure bracketing implementation (e.g. OpenCV) and run the same RAW Bayer inputs. Then, I'll conduct a survey for how preferable the Pi output is vs. the OpenCV output
         - I can randomly assign image A/B to Pi/OpenCV and give options of strongly prefer A, slightly prefer A, they're about the same, slightly prefer B, strongly prefer B
         - It's a win if the average answer is "they're about the same"
 
@@ -34,7 +34,7 @@ These are the current config/shot/frame attributes:
 
 **Shot**:
 - Exposure (in microseconds)
-- Gain (analog  digital gain in multiplier amount)
+- Gain (analog × digital gain in multiplier amount)
 - Analog gain (in multiplier amount)
 - Digital gain (in multiplier amount)
 - Timestamp (from system clock, in microseconds)
@@ -61,7 +61,7 @@ I tested the API by taking a sequence of five photos at different exposures in m
 I followed the FrankenCamera philosphy of best-effort, since it's basically impossible to get the timings exactly right (for the IMX219, frames stream in at a certain framerate so I can't sample at arbitrary timestamps).
 
 ### Evaluation
-I haven't decided the exact scenes I want to use yet, but I performed an example evalutions using the Bayer outputs from my dorm. I set up the OpenCV script to demosaic and white balance (`opencv_demosaic_wb`), and perform Mertens exposure bracketing (`opencv_mertens`).
+I haven't decided the exact scenes I want to use yet, but I performed an example evalution using the Bayer outputs from my dorm. I set up the OpenCV script to demosaic and white balance (`opencv_demosaic_wb`), and perform Mertens exposure bracketing (`opencv_mertens`).
 
 To perform image quality evaluations, I implemented PSNR and SSIM calculation functions. I haven't started the actual HDR pipeline yet on the Pi yet, but just to test it, I created a table comparing the Mertens output to each of the frames processed frames:
 
