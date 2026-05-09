@@ -51,7 +51,6 @@ typedef struct {
     uint32_t width;
     uint32_t height;
     uint32_t vts_def;
-    uint8_t rate_factor;
 } IMX219ModeInfo;
 
 bool imx219_init();

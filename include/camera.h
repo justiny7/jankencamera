@@ -3,7 +3,6 @@
 
 #include "camera_buffer.h"
 
-#define NUM_BUFFERS 8
 
 typedef enum {
     CAM_FMT_BAYER_8,
@@ -18,14 +17,14 @@ typedef struct {
 } CameraConfig;
 
 typedef struct {
-    CameraConfig cfg;
-
     uint32_t exposure;  // microseconds
     float gain;         // total gain multiplier
     float ana_gain;     // analog gain
     float dig_gain;     // digital gain
     uint32_t white_bal;
     uint32_t ts;        // timestamp
+    uint32_t error;     // difference after intended timestamp
+    uint32_t delay;     // delay from last frame (if in sequence)
 } CameraShot;
 
 typedef struct {
@@ -33,6 +32,7 @@ typedef struct {
     uint32_t size;
     uint32_t sequence;
 
+    CameraConfig cfg;
     CameraShot shot;
 } CameraFrame;
 
@@ -45,6 +45,7 @@ void camera_stop();
 
 bool camera_capture_frame(CameraFrame* frame);
 bool camera_capture_frame_shot(CameraFrame* frame, CameraShot shot);
+uint32_t camera_capture_frames(CameraFrame* frames, CameraShot* shots, uint32_t num_shots);
 
 bool camera_set_exposure(uint32_t us);
 bool camera_set_gain(float gain);

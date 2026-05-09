@@ -146,12 +146,12 @@ bool imx219_set_mode(IMX219Mode mode, uint8_t depth) {
     switch (mode) {
         case IMX219_MODE_1920x1080:
             mode_regs = regs_1920x1080;
-            g_mode = (IMX219ModeInfo) { 1920, 1080, 0x6E3, 1 };
+            g_mode = (IMX219ModeInfo) { 1920, 1080, 0x6E3 };
             break;
         case IMX219_MODE_640x480:
         default:
             mode_regs = regs_640x480;
-            g_mode = (IMX219ModeInfo) { 640, 480, 0x6E3, 2 };
+            g_mode = (IMX219ModeInfo) { 640, 480, 0x6E3 };
             break;
     }
 
@@ -160,7 +160,7 @@ bool imx219_set_mode(IMX219Mode mode, uint8_t depth) {
     if (!write_regs(depth == 10 ? regs_raw10 : regs_raw8)) return false;
 
     // Set VBlank and HBlank (align with vts_def)
-    if (!write_reg16(IMX219_VTS, g_mode.vts_def / g_mode.rate_factor)) return false;
+    if (!write_reg16(IMX219_VTS, g_mode.vts_def)) return false;
     if (!write_reg16(IMX219_HTS, IMX219_PPL_MIN)) return false;
 
     return true;
@@ -213,7 +213,7 @@ void imx219_stop_streaming() {
 }
 
 bool imx219_set_exposure(uint16_t lines) {
-    return write_reg16(IMX219_EXPOSURE, lines / g_mode.rate_factor);
+    return write_reg16(IMX219_EXPOSURE, lines);
 }
 bool imx219_set_gain(uint8_t gain) {
     if (gain > IMX219_GAIN_MAX) gain = IMX219_GAIN_MAX;
@@ -245,7 +245,7 @@ uint16_t imx219_get_HTS() {
 uint16_t imx219_get_exposure() {
     uint16_t res;
     if (!read_reg16(IMX219_EXPOSURE, &res)) return 0;
-    return res * g_mode.rate_factor;
+    return res;
 }
 uint8_t imx219_get_analog_gain() {
     uint8_t res;

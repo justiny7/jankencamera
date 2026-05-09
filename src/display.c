@@ -2,6 +2,7 @@
 #include "lib.h"
 #include "mailbox_interface.h"
 #include "vm.h"
+#include "mmu.h"
 
 // TODO: move this to rpi_os?
 #define MBOX_TAG_WAIT_FOR_VSYNC 0x0004800E
@@ -59,4 +60,5 @@ void display_swap() {
     wait_vsync();
     mbox_framebuffer_set_virtual_offset(0, nxt_offset);
     g_current_offset = nxt_offset;
+    mmu_flush_dcache();
 }

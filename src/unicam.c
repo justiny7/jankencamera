@@ -15,10 +15,10 @@
 #define CM_PASSWD       0x5A000000
 #define CSI1_CLKGATE    (0x20802004 | KERNEL_VBASE)
 
-#define TIMEOUT 1000000
+#define CLK_TIMEOUT 1000000
 
 static UnicamConfig g_cfg;
-static bool g_active = false;
+static bool g_active;
 
 #define SWITCH_DMA_BUF(addr) \
     do { \
@@ -32,12 +32,12 @@ static bool start_cam_clock() { // set CAM1 clock to 100MHz
 
     // reset clock & wait for busy bit
     PUT32(CM_CAM1CTL, CM_PASSWD | (1 << 5));
-    for (int i = 0; i < TIMEOUT && (GET32(CM_CAM1CTL) & (1 << 7)); i++);
+    for (int i = 0; i < CLK_TIMEOUT && (GET32(CM_CAM1CTL) & (1 << 7)); i++);
 
     // set divider to 5 and source to PLLD (fixed 500MHz)
     PUT32(CM_CAM1DIV, CM_PASSWD | (5 << 12));
     PUT32(CM_CAM1CTL, CM_PASSWD | (1 << 4) | 6);
-    for (int i = 0; i < TIMEOUT; i++) {
+    for (int i = 0; i < CLK_TIMEOUT; i++) {
         if (GET32(CM_CAM1CTL) & (1 << 7)) {
             printk("unicam: CAM1 clock started\n");
             mem_barrier_dsb();
@@ -84,6 +84,7 @@ static void stop_cam_clock() {
 
 volatile bool g_frame_waiting;
 void __attribute__((interrupt("IRQ"))) unicam_irq_handler() {
+    // static uint32_t lst_t;
     // check pending interrupt on CAM1
     if (GET32(IRQ_PENDING_2) & (1U << (CAM1_INT - 32))) {
         if (!g_active) return;
@@ -100,12 +101,15 @@ void __attribute__((interrupt("IRQ"))) unicam_irq_handler() {
 
         // on frame end interrupt, advance + update DMA buffer
         if ((ista & UNICAM_FEI) || (sta & UNICAM_PI0)) {
-            camera_buffer_advance(g_frame_waiting);
-            if (g_frame_waiting) g_frame_waiting = false;
-
-            CameraBuffer* buf = camera_buffer_get_write();
+            CameraBuffer* buf = camera_buffer_advance(g_frame_waiting);
             SWITCH_DMA_BUF(buf->buf);
+            g_frame_waiting = false;
 
+            // CameraBuffer* buf = camera_buffer_get_write();
+            // SWITCH_DMA_BUF(buf->buf);
+
+            // if (lst_t != 0) printk("i %d\n", sys_timer_get_usec() - lst_t);
+            // lst_t = sys_timer_get_usec();
             mmu_flush_dcache();
         }
 

@@ -1,5 +1,6 @@
 #include "camera_buffer.h"
 #include "lib.h"
+#include "mmu.h"
 
 #include <stddef.h>
 
@@ -31,9 +32,10 @@ bool camera_buffer_init(uint32_t num_buffers) {
     return true;
 }
 
-void camera_buffer_advance(bool set_ready) {
+CameraBuffer* camera_buffer_advance(bool set_ready) {
     if (set_ready) g_ready_idx = g_write_idx;
     g_write_idx = (g_write_idx + 1) % g_num_buffers;
+    return g_buf_ptrs[g_write_idx];
 }
 CameraBuffer* camera_buffer_get_write() {
     return g_buf_ptrs[g_write_idx];
@@ -48,10 +50,22 @@ CameraBuffer* camera_buffer_get_ready() {
     CameraBuffer* res = g_buf_ptrs[g_ready_idx];
     g_buf_ptrs[g_ready_idx] = g_buf_ptrs[g_num_buffers];
     g_buf_ptrs[g_num_buffers] = res;
+    mmu_flush_dcache();
 
     // enable interrupts
     asm volatile ("cpsie i");
 
     return res;
+}
+bool camera_buffer_save_ready(CameraBuffer* buf, uint32_t size) {
+    if (g_ready_idx == -1) return false;
+
+    // copy ready buffer into given buffer (TODO: optimize with DMA?)
+    asm volatile ("cpsid i");
+    memcpy(buf, g_buf_ptrs[g_ready_idx], size);
+    mmu_flush_dcache();
+    asm volatile ("cpsie i");
+
+    return true;
 }
 

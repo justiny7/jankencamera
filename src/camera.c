@@ -8,8 +8,14 @@
 #define MAX_FRAME_SIZE  (1920 * 1080 * 2)
 #define MHZ             1000000
 
-#define MAX_ANALOG_GAIN (8.0)
-#define SHOT_NUM_FRAMES_DISCARD 4
+#define MIN_GAIN                (1.f)
+#define MAX_GAIN                (128.f)
+#define MAX_ANALOG_GAIN         (8.f)
+#define SHOT_NUM_FRAMES_DISCARD 2
+#define CAM_NUM_BUFFERS         8
+
+// min 250ms delay between consecutive shots
+#define CAM_MIN_TS_DELAY        200000
 
 static CameraConfig g_config;
 static bool g_streaming = false;
@@ -51,7 +57,7 @@ bool camera_init() {
         return false;
     }
 
-    if (!camera_buffer_init(NUM_BUFFERS)) {
+    if (!camera_buffer_init(CAM_NUM_BUFFERS)) {
         printk("camera: buffer init failed\n");
         return false;
     }
@@ -176,6 +182,7 @@ bool camera_capture_frame_shot(CameraFrame* frame, CameraShot shot) {
     frame->buf = ready_buf;
     frame->size = g_config.stride * g_config.height;
     frame->sequence = g_sequence++;
+    frame->cfg = g_config;
 
     float ana_gain = ana_reg_to_gain(imx219_get_analog_gain());
     float dig_gain = dig_reg_to_gain(imx219_get_digital_gain());
@@ -185,19 +192,104 @@ bool camera_capture_frame_shot(CameraFrame* frame, CameraShot shot) {
         .ana_gain = ana_gain,
         .dig_gain = dig_gain,
         .ts = ts,
+        .error = 0,
+        .delay = 0
     };
     return true;
 }
 
+/* returns # of successful frames, must have result bufs set in frames.buf */
+uint32_t camera_capture_frames(CameraFrame* frames, CameraShot* shots, uint32_t num_shots) {
+    if (!g_streaming || !frames) return 0;
+
+    for (uint32_t i = 1; i < num_shots; i++) {
+        uint32_t diff = shots[i].ts - shots[i - 1].ts;
+        if (diff < CAM_MIN_TS_DELAY) {
+            printk("camera capture frames: shot delay too small "
+                    "(idx %d-%d, diff=%d)\n", i - 1, i, diff);
+            return 0;
+        }
+        if (diff < shots[i].exposure) {
+            printk("camera capture frames: shot delay smaller than exposre "
+                    "(idx %d-%d, diff=%d, exposure=%d)\n",
+                    i - 1, i, diff, shots[i].exposure);
+            return 0;
+        }
+    }
+    if (shots[0].ts != 0) {
+        printk("camera capture frame: first shot timestamp is nonzero, "
+                "adjusting following timestamps\n");
+    }
+
+    uint32_t successful_frames = 0;
+    uint32_t initial_ts = sys_timer_get_usec();
+    for (uint32_t i = 0; i < num_shots; i++) {
+        bool bad_shot = false;
+
+        CameraShot shot = shots[i];
+        if (shot.exposure && !camera_set_exposure(shot.exposure)) bad_shot = true;
+
+        // auto set gain or control digital/analog separately
+        if (shot.gain != 0) {
+            if (!camera_set_gain(shot.gain)) bad_shot = true;
+        } else {
+            if (shot.ana_gain != 0 && !camera_set_analog_gain(shot.ana_gain)) bad_shot = true;
+            if (shot.dig_gain != 0 && !camera_set_digital_gain(shot.dig_gain)) bad_shot = true;
+        }
+
+        if (bad_shot) {
+            printk("camera capture frames: bad shot (idx %d), skipping\n", i);
+            continue;
+        }
+
+        // wait until timestamp
+        uint32_t ts, target_ts = (i == 0 ? CAM_MIN_TS_DELAY : shot.ts - shots[0].ts);
+        while ((ts = sys_timer_get_usec()) - initial_ts < target_ts) unicam_wait_frame();
+
+        CameraFrame frame;
+        frame.buf = frames[i].buf;
+        frame.size = g_config.stride * g_config.height;
+
+        // CameraBuffer* ready_buf = camera_buffer_get_ready();
+        if (!camera_buffer_save_ready(frame.buf, frame.size)) {
+            printk("camera capture frames: can't get ready buffer (idx %d), skipping\n", i);
+            continue;
+        }
+
+        if (i == 0) initial_ts = ts;
+
+        frame.sequence = g_sequence++;
+        frame.cfg = g_config;
+
+        float ana_gain = ana_reg_to_gain(imx219_get_analog_gain());
+        float dig_gain = dig_reg_to_gain(imx219_get_digital_gain());
+        frame.shot = (CameraShot) {
+            .exposure = lines_to_us(imx219_get_exposure()),
+            .gain = ana_gain * dig_gain,
+            .ana_gain = ana_gain,
+            .dig_gain = dig_gain,
+            .ts = ts,
+            .error = (ts - initial_ts) - (shot.ts - shots[0].ts),
+            .delay = ts - (i == 0 ? initial_ts : frames[i - 1].shot.ts),
+        };
+
+        frames[i] = frame;
+        successful_frames++;
+    }
+
+    return successful_frames;
+}
+
 bool camera_set_exposure(uint32_t us) {
     uint32_t value = us_to_lines(us);
-    // printk("us: %d -> lines: %d\n", us, value);
     return imx219_set_exposure(value);
 }
 
 bool camera_set_gain(float gain) {
+    if (gain < MIN_GAIN || gain > MAX_GAIN) return false;
+
     float ana_gain = gain, dig_gain = 1.0;
-    if (gain > MAX_ANALOG_GAIN) { // max analog gain
+    if (gain > MAX_ANALOG_GAIN) {
         ana_gain = MAX_ANALOG_GAIN;
         dig_gain = gain / MAX_ANALOG_GAIN;
     }
@@ -209,7 +301,6 @@ bool camera_set_gain(float gain) {
 }
 bool camera_set_analog_gain(float ana_gain) {
     uint32_t value = ana_gain_to_reg(ana_gain);
-    // printk("gain: %f -> val: %d\n", gain, value);
     return imx219_set_gain(value);
 }
 bool camera_set_digital_gain(float dig_gain) {

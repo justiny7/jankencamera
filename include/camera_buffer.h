@@ -16,8 +16,9 @@ typedef struct {
 
 bool camera_buffer_init(uint32_t num_buffers);
 
-void camera_buffer_advance(bool set_ready);
+CameraBuffer* camera_buffer_advance(bool set_ready);
 CameraBuffer* camera_buffer_get_write();
 CameraBuffer* camera_buffer_get_ready();
+bool camera_buffer_save_ready(CameraBuffer* buf, uint32_t size);
 
 #endif
