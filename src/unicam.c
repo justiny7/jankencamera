@@ -105,9 +105,6 @@ void __attribute__((interrupt("IRQ"))) unicam_irq_handler() {
             SWITCH_DMA_BUF(buf->buf);
             g_frame_waiting = false;
 
-            // CameraBuffer* buf = camera_buffer_get_write();
-            // SWITCH_DMA_BUF(buf->buf);
-
             // if (lst_t != 0) printk("i %d\n", sys_timer_get_usec() - lst_t);
             // lst_t = sys_timer_get_usec();
             mmu_flush_dcache();
