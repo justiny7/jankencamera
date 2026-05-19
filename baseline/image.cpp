@@ -4,17 +4,19 @@
 #include <fstream>
 #include <cassert>
 
-Image::Image(int width, int height, int depth, std::vector<float> data) :
-    width_(width),
-    height_(height),
-    size_(width * height),
-    depth_(depth),
-    data_(std::move(data)) {
+Image::Image(int width, int height, int depth, PixelFormat fmt) :
+        width_(width), height_(height), size_(width * height),
+        depth_(depth), fmt_(fmt),
+        data_(width * height * static_cast<int>(fmt)) { }
 
-    if (data_.size() == (size_t) size_) {
+Image::Image(int width, int height, int depth, std::vector<float> data) :
+        width_(width), height_(height), size_(width * height),
+        depth_(depth), data_(std::move(data)) {
+
+    if (data_.size() == static_cast<size_t>(size_)) {
         fmt_ = GRAY;
     } else {
-        assert(data_.size() == (size_t) size_ * 3);
+        assert(data_.size() == static_cast<size_t>(size_) * 3);
         fmt_ = RGB;
     }
 }
@@ -29,7 +31,8 @@ int Image::get_bayer_channel(int i) const {
 }
 
 void Image::black_white_norm(int white_level, int black_level) {
-    for (float &i : data_) {
+    assert(fmt_ == GRAY);
+    for (float& i : data_) {
         i = std::clamp(i - black_level, 0.f, (float) white_level - black_level);
         i *= 1.f * pixel_max(depth_) / (white_level - black_level);
     }
@@ -37,6 +40,7 @@ void Image::black_white_norm(int white_level, int black_level) {
 
 void Image::gray_world_wb(bool wb_intensity,
         float wb_intensity_threshold) {
+    assert(fmt_ == GRAY);
     std::vector<float> avg(4);
     std::vector<int> cnt(4);
     for (int i = 0; i < size_; i++) {
@@ -107,7 +111,7 @@ void Image::debayer() {
     fmt_ = RGB;
 }
 
-void Image::write_ppm(std::string filename) {
+void Image::write_ppm(std::string filename) const {
     std::ofstream fout(filename + ".ppm");
     if (fmt_ == GRAY) {
         fout << "P2\n" << width_ << " " << height_ << '\n';
@@ -123,7 +127,30 @@ void Image::write_ppm(std::string filename) {
     fout.close();
 }
 
-std::vector<Image::Pixel> Image::get_pixels() {
+void Image::dump_data(std::string filename) const {
+    std::ofstream fout(filename + ".txt");
+
+    if (fmt_ == GRAY) {
+        for (int y = 0; y < height_; y++) {
+            for (int x = 0; x < width_; x++) {
+                fout << std::fixed << std::setprecision(4) <<
+                    get_data_at(y, x, 0) << " \n"[x == width_ - 1];
+            }
+        }
+    } else {
+        for (int y = 0; y < height_; y++) {
+            for (int x = 0; x < width_; x++) {
+                fout << std::fixed << std::setprecision(4) << "( " <<
+                    get_data_at(y, x, 0) << ", " <<
+                    get_data_at(y, x, 1) << ", " <<
+                    get_data_at(y, x, 2) << ")" << " \n"[x == width_ - 1];
+            }
+        }
+    }
+    fout.close();
+}
+
+std::vector<Image::Pixel> Image::get_pixels() const {
     std::vector<Image::Pixel> pixels(size_);
     if (fmt_ == GRAY) {
         for (int i = 0; i < size_; i++) {
@@ -145,3 +172,121 @@ std::vector<Image::Pixel> Image::get_pixels() {
     return pixels;
 }
 
+float Image::get_r_at(int idx) const {
+    assert(fmt_ == RGB);
+    return data_.at(idx * 3);
+}
+float Image::get_g_at(int idx) const {
+    assert(fmt_ == RGB);
+    return data_.at(idx * 3 + 1);
+}
+float Image::get_b_at(int idx) const {
+    assert(fmt_ == RGB);
+    return data_.at(idx * 3 + 2);
+}
+float Image::get_r_norm_at(int idx) const {
+    assert(fmt_ == RGB);
+    return data_.at(idx * 3) / pixel_max(depth_);
+}
+float Image::get_g_norm_at(int idx) const {
+    assert(fmt_ == RGB);
+    return data_.at(idx * 3 + 1) / pixel_max(depth_);
+}
+float Image::get_b_norm_at(int idx) const {
+    assert(fmt_ == RGB);
+    return data_.at(idx * 3 + 2) / pixel_max(depth_);
+}
+
+bool Image::in_bounds(int y, int x, int c) const {
+    return (y >= 0 && y < height_ &&
+            x >= 0 && x < width_ &&
+            c >= 0 && c < get_channels());
+}
+int Image::get_idx(int y, int x, int c) const {
+    assert(in_bounds(y, x, c));
+    return (y * width_ + x) * get_channels() + c;
+}
+bool Image::same_shape(const Image& a, const Image& b) {
+    return a.get_width() == b.get_width() &&
+        a.get_height() == b.get_height() &&
+        a.get_channels() == b.get_channels();
+}
+Image Image::add(const Image& a, const Image& b) {
+    assert(same_shape(a, b));
+
+    int w = a.get_width();
+    int h = a.get_height();
+    int c = a.get_channels();
+    Image out(w, h, a.get_depth(), a.get_format());
+
+    int sz = w * h * c;
+    for (int i = 0; i < sz; i++) {
+        out.set_data_at(i, a.get_data_at(i) + b.get_data_at(i));
+    }
+    return out;
+}
+Image Image::sub(const Image& a, const Image& b) {
+    assert(same_shape(a, b));
+
+    int w = a.get_width();
+    int h = a.get_height();
+    int c = a.get_channels();
+    Image out(w, h, a.get_depth(), a.get_format());
+
+    int sz = w * h * c;
+    for (int i = 0; i < sz; i++) {
+        out.set_data_at(i, a.get_data_at(i) - b.get_data_at(i));
+    }
+    return out;
+}
+Image Image::mul(const Image& a, const Image& b) {
+    assert(same_shape(a, b));
+
+    int w = a.get_width();
+    int h = a.get_height();
+    int c = a.get_channels();
+    Image out(w, h, a.get_depth(), a.get_format());
+
+    int sz = w * h * c;
+    for (int i = 0; i < sz; i++) {
+        out.set_data_at(i, a.get_data_at(i) * b.get_data_at(i));
+    }
+    return out;
+}
+
+Image Image::image_like() const {
+    return Image(width_, height_, depth_, fmt_);
+}
+Image Image::gray_like() const {
+    return Image(width_, height_, depth_, GRAY);
+}
+Image Image::rgb_like() const {
+    return Image(width_, height_, depth_, RGB);
+}
+
+float Image::get_luma(float r, float g, float b) {
+    return r * luma_r + g * luma_g + b * luma_b;
+}
+Image Image::to_grayscale() const {
+    assert(fmt_ == RGB);
+
+    Image out(width_, height_, depth_, GRAY);
+    for (int i = 0; i < size_; i++) {
+        out.set_data_at(i,
+                get_luma(get_r_at(i), get_g_at(i), get_b_at(i)));
+    }
+
+    return out;
+}
+Image Image::to_rgb() const {
+    assert(fmt_ == GRAY);
+
+    Image out(width_, height_, depth_, RGB);
+    for (int i = 0; i < size_; i++) {
+        out.set_data_at(i * 3, data_[i]);
+        out.set_data_at(i * 3 + 1, data_[i]);
+        out.set_data_at(i * 3 + 2, data_[i]);
+    }
+
+    return out;
+}
