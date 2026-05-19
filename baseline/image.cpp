@@ -70,34 +70,45 @@ void Image::debayer() {
     // assumes RGGB
     for (int y = 0; y < height_; y++) {
         for (int x = 0; x < width_; x++) {
-            if (y == 0 || x == 0) {
-                continue;
-            }
-
-            std::vector<float>& p = data_;
             int i = y * width_ + x;
             int s = width_;
+
+            // border reflection
+            int xl = (x == 0 ? 1 : -1);
+            int xr = (x == width_ - 1 ? -1 : 1);
+            int yl = (y == 0 ? s : -s);
+            int yr = (y == height_ - 1 ? -s : s);
+
+            float p = data_[i];
+            float pl = data_[i + xl];
+            float pul = data_[i + yl + xl];
+            float pu = data_[i + yl];
+            float pur = data_[i + yl + xr];
+            float pr = data_[i + xr];
+            float pdr = data_[i + yr + xr];
+            float pd = data_[i + yr];
+            float pdl = data_[i + yr + xl];
 
             int r, g, b;
             if (y & 1) {
                 if (x & 1) { // b
-                    r = (p[i - s - 1] + p[i - s + 1] + p[i + s - 1] + p[i + s + 1]) / 4;
-                    g = (p[i - 1] + p[i + 1] + p[i - s] + p[i + s]) / 4;
-                    b = p[i];
+                    r = (pul + pur + pdl + pdr) / 4;
+                    g = (pl + pu + pr + pd) / 4;
+                    b = p;
                 } else { // g2
-                    r = (p[i - s] + p[i + s]) / 2;
-                    g = p[i];
-                    b = (p[i - 1] + p[i + 1]) / 2;
+                    r = (pu + pd) / 2;
+                    g = p;
+                    b = (pl + pr) / 2;
                 }
             } else {
                 if (x & 1) { // g1
-                    r = (p[i - 1] + p[i + 1]) / 2;
-                    g = p[i];
-                    b = (p[i - s] + p[i + s]) / 2;
+                    r = (pl + pr) / 2;
+                    g = p;
+                    b = (pu + pd) / 2;
                 } else { // r
-                    r = p[i];
-                    g = (p[i - 1] + p[i + 1] + p[i - s] + p[i + s]) / 4;
-                    b = (p[i - s - 1] + p[i - s + 1] + p[i + s - 1] + p[i + s + 1]) / 4;
+                    r = p;
+                    g = (pl + pu + pr + pd) / 4;
+                    b = (pul + pur + pdl + pdr) / 4;
                 }
             }
 

@@ -17,7 +17,8 @@ MertensExposure::MertensExposure(std::vector<Image> imgs) :
     img_size_ = imgs_[0].get_size();
     pmax_ = imgs_[0].get_pmax();
 
-    num_levels_ = static_cast<int>(std::log2(std::min(width_, height_))) - 3;
+    // num_levels_ = static_cast<int>(std::log2(std::min(width_, height_))) - 3;
+    num_levels_ = static_cast<int>(std::log2(std::min(width_, height_))) - 2;
     if (num_levels_ < 1) num_levels_ = 1;
 
     // assert even width/height
