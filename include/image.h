@@ -1,0 +1,52 @@
+#ifndef IMAGE_H
+#define IMAGE_H
+
+#include <stdint.h>
+#include <stdbool.h>
+
+typedef uint32_t u32;
+typedef int32_t  i32;
+
+typedef enum {
+    PIXEL_GRAY = 1,
+    PIXEL_RGB = 3,
+} PixelFormat;
+
+typedef struct {
+    uint16_t r, g, b;
+} Pixel;
+
+typedef struct {
+    u32 width;
+    u32 height;
+    u32 size;
+    u32 depth;
+    PixelFormat fmt;
+
+    float* data;
+} Image;
+
+void img_init(Image* img, u32 width, u32 height, u32 depth, PixelFormat fmt);
+void img_init_data(Image* img, u32 width, u32 height, u32 depth, PixelFormat fmt,
+        float* data);
+void img_free(Image* img);
+
+void img_black_white_norm(Image* img, u32 white_lvl, u32 black_lvl);
+void img_gray_world_wb(Image* img);
+void img_debayer(Image* img);
+
+u32 img_get_idx(const Image* img, u32 y, u32 x, u32 c);
+float img_get_data(const Image* img, u32 y, u32 x, u32 c);
+void img_like(Image* out, const Image* in);
+void img_gray_like(Image* out, const Image* in);
+void img_rgb_like(Image* out, const Image* in);
+void img_to_grayscale(Image* out, const Image* in);
+
+void img_set_data(Image* img, u32 y, u32 x, u32 c, float val);
+void img_copy(Image* out, const Image* in);
+
+void img_add(Image* out, const Image* a, const Image* b);
+void img_sub(Image* out, const Image* a, const Image* b);
+void img_mul(Image* out, const Image* a, const Image* b);
+
+#endif
