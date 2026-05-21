@@ -68,3 +68,9 @@ I plan on building a bare-metal HDR pipeline on a Raspberry Pi Zero W with a Fra
 ## Checkpoint 1
 
 Check `checkpoint_1` folder!
+
+---
+
+## Checkpoint 2
+
+Check `checkpoint_2` folder!
