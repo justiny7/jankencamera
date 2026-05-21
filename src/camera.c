@@ -20,6 +20,8 @@
 static CameraConfig g_config;
 static bool g_streaming = false;
 static uint32_t g_sequence = 0;
+static uint32_t vflip = 0;
+static uint32_t hflip = 0;
 
 static uint32_t us_to_lines(uint32_t us) {
     return (uint32_t) (us * IMX219_PIXEL_RATE_MHZ / imx219_get_HTS() + 0.5f);
@@ -86,7 +88,7 @@ bool camera_set_format(uint32_t width, uint32_t height, CameraFormat fmt) {
     IMX219ModeInfo info = imx219_get_mode_info();
     g_config.width = info.width;
     g_config.height = info.height;
-    g_config.format = fmt;
+    g_config.fmt = fmt;
     // depth = 10 -> uint16 = 2 bytes per row, rounded to nearest 32
     g_config.stride = (info.width * (depth == 10 ? 2 : 1) + 31) & ~31;
 
@@ -308,8 +310,21 @@ bool camera_set_digital_gain(float dig_gain) {
     return imx219_set_digital_gain(value);
 }
 bool camera_set_vflip(bool enable) {
-    return imx219_set_vflip(enable);
+    if (imx219_set_vflip(enable)) {
+        vflip = enable;
+        g_config.bayer_fmt = camera_get_bayer_fmt();
+        return true;
+    }
+    return false;
 }
 bool camera_set_hflip(bool enable) {
-    return imx219_set_hflip(enable);
+    if (imx219_set_hflip(enable)) {
+        hflip = enable;
+        g_config.bayer_fmt = camera_get_bayer_fmt();
+        return true;
+    }
+    return false;
+}
+BayerFormat camera_get_bayer_fmt() {
+    return (BayerFormat) vflip * 2 + hflip;
 }

@@ -3,17 +3,24 @@
 
 #include "camera_buffer.h"
 
+typedef enum {
+    BAYER_RGGB,
+    BAYER_GRBG,
+    BAYER_GBRG,
+    BAYER_BGGR
+} BayerFormat;
 
 typedef enum {
-    CAM_FMT_BAYER_8,
-    CAM_FMT_BAYER_10, // 16-bit pixels
+    CAM_FMT_BAYER_8     = 8,
+    CAM_FMT_BAYER_10    = 10, // 16-bit pixels
 } CameraFormat;
 
 typedef struct {
     uint32_t width;
     uint32_t height;
     uint32_t stride; // bytes per row
-    CameraFormat format;
+    CameraFormat fmt;
+    BayerFormat bayer_fmt;
 } CameraConfig;
 
 typedef struct {
@@ -21,7 +28,6 @@ typedef struct {
     float gain;         // total gain multiplier
     float ana_gain;     // analog gain
     float dig_gain;     // digital gain
-    uint32_t white_bal;
     uint32_t ts;        // timestamp
     uint32_t error;     // difference after intended timestamp
     uint32_t delay;     // delay from last frame (if in sequence)
@@ -53,5 +59,6 @@ bool camera_set_analog_gain(float ana_gain);
 bool camera_set_digital_gain(float dig_gain);
 bool camera_set_vflip(bool enable);
 bool camera_set_hflip(bool enable);
+BayerFormat camera_get_bayer_fmt();
 
 #endif

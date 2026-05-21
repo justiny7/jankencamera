@@ -1,6 +1,8 @@
 #ifndef IMAGE_H
 #define IMAGE_H
 
+#include "camera.h"
+
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -23,17 +25,24 @@ typedef struct {
     u32 depth;
     PixelFormat fmt;
 
+    bool is_bayer;
+    BayerFormat bfmt;
+
     float* data;
 } Image;
 
 void img_init(Image* img, u32 width, u32 height, u32 depth, PixelFormat fmt);
 void img_init_data(Image* img, u32 width, u32 height, u32 depth, PixelFormat fmt,
         float* data);
+void img_init_bayer(Image* img, u32 width, u32 height, u32 depth,
+        uint8_t* buf, BayerFormat bfmt);
+void img_init_frame(Image* img, CameraFrame* frame);
 void img_free(Image* img);
 
 void img_black_white_norm(Image* img, u32 white_lvl, u32 black_lvl);
 void img_gray_world_wb(Image* img);
 void img_debayer(Image* img);
+void img_save_ppm(Image* img, const char* filename);
 
 u32 img_get_idx(const Image* img, u32 y, u32 x, u32 c);
 float img_get_data(const Image* img, u32 y, u32 x, u32 c);

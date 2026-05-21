@@ -4,7 +4,7 @@
 #include "lib.h"
 #include "sys_timer.h"
 
-#define VERBOSE 0
+#define VERBOSE 1
 
 static const float LN2 = 0.693147f;
 static const float F_EPS = 1e-6f;
@@ -55,7 +55,7 @@ static void convolve_gaussian(Image* out, const Image* in, float mul) {
                 for (i32 k = -r; k <= r; k++) {
                     i32 px = x + k;
                     if (px < 0) px = -px;
-                    if (px >= w) px = 2 * (w - 1) - px;
+                    if (px >= (i32) w) px = 2 * (w - 1) - px;
                     sum += img_get_data(in, y, px, c) * gaussian_kernel[k + r];
                 }
 
@@ -73,7 +73,7 @@ static void convolve_gaussian(Image* out, const Image* in, float mul) {
                 for (i32 k = -r; k <= r; k++) {
                     i32 py = y + k;
                     if (py < 0) py = -py;
-                    if (py >= h) py = 2 * (h - 1) - py;
+                    if (py >= (i32) h) py = 2 * (h - 1) - py;
                     sum += img_get_data(&temp, py, x, c) * gaussian_kernel[k + r];
                 }
 
@@ -251,13 +251,9 @@ static void collapse_pyramid(MertensExposure* m, Image* out, const Image* pyrami
     for (i32 i = m->num_lvls - 2; i >= 0; i--) {
         Image temp;
         upsample(&temp, out, pyramid[i].width, pyramid[i].height);
-        img_free(out);
 
-        img_like(out, &pyramid[i]);
-        u32 sz = pyramid[i].size * pyramid[i].fmt;
-        for (u32 j = 0; j < sz; j++) {
-            out->data[j] = temp.data[j] + pyramid[i].data[j];
-        }
+        img_free(out);
+        img_add(out, &temp, &pyramid[i]);
 
         img_free(&temp);
     }
@@ -283,14 +279,16 @@ void mertens_init(MertensExposure* m, Image* imgs, u32 num_imgs) {
 #if VERBOSE
 static uint32_t last_t;
 #define now() last_t = sys_timer_get_usec()
-#define elapsed() printk("elapsed: %d\n", sys_timer_get_usec() - last_t)
+#define elapsed() printk("elapsed (us): %d\n", sys_timer_get_usec() - last_t)
+#define title(...) printk(__VA_ARGS__)
 #else
 #define now()
 #define elapsed()
+#define title(...)
 #endif
 
 Image* mertens_fuse(MertensExposure* m) {
-    printk("normalizing...\n");
+    title("normalizing...\n");
 
     now();
     for (u32 i = 0; i < m->num_imgs; i++) {
@@ -301,7 +299,7 @@ Image* mertens_fuse(MertensExposure* m) {
     }
     elapsed();
 
-    printk("computing weight maps...\n");
+    title("computing weight maps...\n");
 
     Image* weight_maps = kmalloc(m->num_imgs * sizeof(Image));
     now();
@@ -310,13 +308,13 @@ Image* mertens_fuse(MertensExposure* m) {
     }
     elapsed();
 
-    printk("normalizing weight maps...\n");
+    title("normalizing weight maps...\n");
 
     now();
     normalize_weight_maps(m, weight_maps);
     elapsed();
 
-    printk("building pyramids...\n");
+    title("building pyramids...\n");
     Image** laplacians = kmalloc(m->num_imgs * sizeof(Image*));
     Image** weights = kmalloc(m->num_imgs * sizeof(Image*));
     now();
@@ -331,7 +329,7 @@ Image* mertens_fuse(MertensExposure* m) {
         img_free(&weight_maps[i]);
     }
 
-    printk("blending...\n");
+    title("blending...\n");
 
     Image* blended = kmalloc(m->num_lvls * sizeof(Image));
     now();
@@ -348,14 +346,14 @@ Image* mertens_fuse(MertensExposure* m) {
     kfree(laplacians);
     kfree(weights);
 
-    printk("collapsing...\n");
+    title("collapsing...\n");
 
     Image* out = kmalloc(sizeof(Image));
     now();
     collapse_pyramid(m, out, blended);
     elapsed();
 
-    printk("scaling back...\n");
+    title("scaling back...\n");
 
     now();
     for (u32 i = 0; i < m->img_size * 3; i++) {
@@ -363,10 +361,14 @@ Image* mertens_fuse(MertensExposure* m) {
     }
     elapsed();
 
+    title("writing...\n");
+
     // free blended pyramid
     for (u32 i = 0; i < m->num_lvls; i++) {
         img_free(&blended[i]);
     }
+
+    title("done!\n");
 
     return out;
 }

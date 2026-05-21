@@ -22,7 +22,7 @@
 
 typedef uint32_t u32;
 static Image imgs[N];
-static float bayer[N][SIZE];
+static uint16_t bayer[N][SIZE];
 static uint8_t buf[SIZE * 3];
 
 static void to_fat_8_3(const char* filename, char out[11]) {
@@ -81,8 +81,7 @@ void main() {
 
     for (int c = 0; c < N; c++) {
         for (u32 i = 0; i < SIZE; i++) {
-            u32 cur = next_int(&file_data);
-            bayer[c][i] = (float) cur;
+            bayer[c][i] = (uint16_t) next_int(&file_data);
         }
     }
 
@@ -90,19 +89,15 @@ void main() {
 
     for (int i = 0; i < N; i++) {
         Image* img = &imgs[i];
-        img_init_data(img, WIDTH, HEIGHT, DEPTH, PIXEL_GRAY, bayer[i]);
+        img_init_bayer(img, WIDTH, HEIGHT, DEPTH, (uint8_t*) bayer[i], BAYER_RGGB);
 
         img_black_white_norm(img, WHITE_LVL, BLACK_LVL);
         img_gray_world_wb(img);
         img_debayer(img);
 
-        /*
-        for (int j = 0; j < SIZE * 3; j++) {
-            buf[j] = ((uint16_t) img->data[j]) >> 2;
-        }
-
-        assert(sd_write_file("img1.txt", buf, SIZE * 3), "can't write to file");
-        */
+        char* fn = "TMP     PPM";
+        fn[3] = '0' + i;
+        img_save_ppm(img, fn);
     }
 
     MertensExposure m;
@@ -113,5 +108,6 @@ void main() {
         buf[j] = ((uint16_t) res->data[j]) >> 2;
     }
 
-    assert(sd_write_file("mert.bin", buf, SIZE * 3), "can't write to file");
+    printk("write ppm...\n");
+    img_save_ppm(res, "OUT     PPM");
 }
