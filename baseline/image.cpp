@@ -122,6 +122,24 @@ void Image::debayer() {
     fmt_ = RGB;
 }
 
+void Image::convert_depth(int new_depth) {
+    float pmax = static_cast<float>(pixel_max(new_depth));
+
+    if (depth_ < new_depth) {
+        int mul = (1 << (new_depth - depth_));
+        for (float& f : data_) {
+            f = std::clamp(f * mul, 0.f, pmax);
+        }
+    } else if (depth_ > new_depth) {
+        int div = (1 << (depth_ - new_depth));
+        for (float& f : data_) {
+            f = std::clamp(f / div, 0.f, pmax);
+        }
+    }
+
+    depth_ = new_depth;
+}
+
 void Image::write_ppm(std::string filename) const {
     std::ofstream fout(filename + ".ppm");
     if (fmt_ == GRAY) {

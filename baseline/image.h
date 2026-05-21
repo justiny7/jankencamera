@@ -15,6 +15,7 @@ public:
     void black_white_norm(int white_level, int black_level);
     void gray_world_wb(bool wb_intensity, float wb_intensity_threshold);
     void debayer();
+    void convert_depth(int new_depth);
     void write_ppm(std::string filename) const;
 
     // helpers

@@ -6,6 +6,8 @@
 #include <fstream>
 #include <iostream>
 
+#define DEBUG 0
+
 MertensExposure::MertensExposure(std::vector<Image> imgs) :
     imgs_(std::move(imgs)) {
     assert(!imgs_.empty());
@@ -54,14 +56,14 @@ Image MertensExposure::fuse() {
         laplacians.push_back(build_laplacian_pyramid(imgs_[i]));
         weights.push_back(build_gaussian_pyramid(weight_maps[i]));
 
-        // /*
+#if DEBUG
         for (int l = 0; l < num_levels_; l++) {
             laplacians[i][l].write_ppm("DEBUG_laplacian_" + std::to_string(i) +
                     "_" + std::to_string(l));
             weights[i][l].dump_data("DEBUG_weight_" + std::to_string(i) +
                     "_" + std::to_string(l));
         }
-        // */
+#endif
     }
 
     std::vector<Image> blended = blend_pyramids(laplacians, weights);

@@ -278,19 +278,19 @@ void mertens_init(MertensExposure* m, Image* imgs, u32 num_imgs) {
 
 #if VERBOSE
 static uint32_t last_t;
-#define now() last_t = sys_timer_get_usec()
+#define now(...) \
+    do { \
+        printk(__VA_ARGS__); \
+        last_t = sys_timer_get_usec(); \
+    } while(false)
 #define elapsed() printk("elapsed (us): %d\n", sys_timer_get_usec() - last_t)
-#define title(...) printk(__VA_ARGS__)
 #else
-#define now()
+#define now(...)
 #define elapsed()
-#define title(...)
 #endif
 
 Image* mertens_fuse(MertensExposure* m) {
-    title("normalizing...\n");
-
-    now();
+    now("normalizing...\n");
     for (u32 i = 0; i < m->num_imgs; i++) {
         float* data = m->imgs[i].data;
         for (u32 j = 0; j < m->img_size * 3; j++) {
@@ -299,25 +299,21 @@ Image* mertens_fuse(MertensExposure* m) {
     }
     elapsed();
 
-    title("computing weight maps...\n");
 
     Image* weight_maps = kmalloc(m->num_imgs * sizeof(Image));
-    now();
+    now("computing weight maps...\n");
     for (u32 i = 0; i < m->num_imgs; i++) {
         compute_weight_map(&weight_maps[i], &m->imgs[i]);
     }
     elapsed();
 
-    title("normalizing weight maps...\n");
-
-    now();
+    now("normalizing weight maps...\n");
     normalize_weight_maps(m, weight_maps);
     elapsed();
 
-    title("building pyramids...\n");
     Image** laplacians = kmalloc(m->num_imgs * sizeof(Image*));
     Image** weights = kmalloc(m->num_imgs * sizeof(Image*));
-    now();
+    now("building pyramids...\n");
     for (u32 i = 0; i < m->num_imgs; i++) {
         build_laplacian_pyramid(m, &laplacians[i], &m->imgs[i]);
         build_gaussian_pyramid(m, &weights[i], &weight_maps[i]);
@@ -329,10 +325,9 @@ Image* mertens_fuse(MertensExposure* m) {
         img_free(&weight_maps[i]);
     }
 
-    title("blending...\n");
 
     Image* blended = kmalloc(m->num_lvls * sizeof(Image));
-    now();
+    now("blending...\n");
     blend_pyramids(m, &blended, laplacians, weights);
     elapsed();
 
@@ -346,29 +341,23 @@ Image* mertens_fuse(MertensExposure* m) {
     kfree(laplacians);
     kfree(weights);
 
-    title("collapsing...\n");
 
     Image* out = kmalloc(sizeof(Image));
-    now();
+    now("collapsing...\n");
     collapse_pyramid(m, out, blended);
     elapsed();
 
-    title("scaling back...\n");
 
-    now();
+    now("scaling back...\n");
     for (u32 i = 0; i < m->img_size * 3; i++) {
         out->data[i] = clampf(out->data[i] * m->pmax, 0.f, (float) m->pmax);
     }
     elapsed();
 
-    title("writing...\n");
-
     // free blended pyramid
     for (u32 i = 0; i < m->num_lvls; i++) {
         img_free(&blended[i]);
     }
-
-    title("done!\n");
 
     return out;
 }

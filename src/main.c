@@ -20,10 +20,11 @@
 #define BLACK_LVL 64
 #define WHITE_LVL 1023
 
+#define VERBOSE 1
+
 typedef uint32_t u32;
 static Image imgs[N];
 static uint16_t bayer[N][SIZE];
-static uint8_t buf[SIZE * 3];
 
 static void to_fat_8_3(const char* filename, char out[11]) {
     memset(out, ' ', 11);
@@ -61,6 +62,19 @@ u32 next_int(uint8_t** data) {
     return res;
 }
 
+#if VERBOSE
+static uint32_t last_t;
+#define now(...) \
+    do { \
+        printk(__VA_ARGS__); \
+        last_t = sys_timer_get_usec(); \
+    } while(false)
+#define elapsed() printk("elapsed (us): %d\n", sys_timer_get_usec() - last_t)
+#else
+#define now(...)
+#define elapsed()
+#endif
+
 void main() {
     mmu_enable_caches();
 
@@ -91,9 +105,17 @@ void main() {
         Image* img = &imgs[i];
         img_init_bayer(img, WIDTH, HEIGHT, DEPTH, (uint8_t*) bayer[i], BAYER_RGGB);
 
+        now("black level sub\n");
         img_black_white_norm(img, WHITE_LVL, BLACK_LVL);
+        elapsed();
+
+        now("white balance\n");
         img_gray_world_wb(img);
+        elapsed();
+
+        now("debayer\n");
         img_debayer(img);
+        elapsed();
 
         char* fn = "TMP     PPM";
         fn[3] = '0' + i;
@@ -103,10 +125,9 @@ void main() {
     MertensExposure m;
     mertens_init(&m, imgs, N);
 
+    now("mertens\n");
     Image* res = mertens_fuse(&m);
-    for (int j = 0; j < SIZE * 3; j++) {
-        buf[j] = ((uint16_t) res->data[j]) >> 2;
-    }
+    elapsed();
 
     printk("write ppm...\n");
     img_save_ppm(res, "OUT     PPM");

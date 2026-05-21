@@ -1,5 +1,6 @@
 #include "image.h"
 #include "mertens.h"
+#include "scoped_timer.h"
 
 #include <iostream>
 #include <fstream>
@@ -15,7 +16,7 @@ const int height = 800;
 #else
 const std::string input_fname = "input.txt";
 const std::string output_prefix = "output_";
-const int num_imgs = 5;
+const int num_imgs = 3;
 const int width = 640;
 const int height = 480;
 #endif
@@ -30,32 +31,6 @@ const double wb_intensity_threshold = 0.95;
 const bool wb_intensity = false;
 
 int main() {
-    /*
-    std::vector<float> a = {1, 2, 3, 4, 5};
-    std::vector<float> b = {2, 4, 6, 8, 10};
-    Image ia(1, 5, 10, a);
-    Image ib(1, 5, 10, b);
-
-    Image ad = Image::add(ia, ib);
-    Image sb = Image::sub(ia, ib);
-    Image mu = Image::mul(ia, ib);
-
-    for (float f : ad.get_data()) std::cout << f << " ";
-    std::cout << '\n';
-    for (float f : sb.get_data()) std::cout << f << " ";
-    std::cout << '\n';
-    for (float f : mu.get_data()) std::cout << f << " ";
-    std::cout << '\n';
-
-    for (size_t i = 0; i < a.size(); i++) {
-        std::cout << ad.get_data_at(i) << '\t' <<
-            sb.get_data_at(i) << '\t' <<
-            mu.get_data_at(i) << '\n';
-    }
-
-    return 0;
-    */
-
     std::ifstream fin(input_fname);
     std::vector<Image> imgs;
 
@@ -81,51 +56,39 @@ int main() {
         }
 
         Image img(width, height, 10, bayer);
-        img.write_ppm(output_prefix + "bayer_" + std::to_string(cur_img));
 
-        /*
-        Image lconv = MertensExposure::convolve_laplacian(img);
-        lconv.write_ppm("lconv_" + std::to_string(cur_img));
+        {
+            ScopedTimer t("Black level subtraction");
+            img.black_white_norm(white_level, black_level);
+        }
 
-        Image gconv = MertensExposure::convolve_gaussian(img);
-        gconv.write_ppm("gconv_" + std::to_string(cur_img));
+        {
+            ScopedTimer t("White balance");
+            img.gray_world_wb(wb_intensity, wb_intensity_threshold);
+        }
 
-        Image expos_w = MertensExposure::compute_exposure_weight(img);
-        expos_w.write_ppm("expos_w" + std::to_string(cur_img));
+        {
+            ScopedTimer t("Debayer");
+            img.debayer();
+        }
 
-        Image contrast_w = MertensExposure::compute_contrast_weight(img);
-        contrast_w.write_ppm("contrast_w" + std::to_string(cur_img));
+        imgs.push_back(img);
 
-        Image total_w = Image::mul(expos_w, contrast_w);
-        total_w.write_ppm("total_w" + std::to_string(cur_img));
-
-        continue;
-        */
-
-        img.black_white_norm(white_level, black_level);
-        img.write_ppm(output_prefix + "norm_" + std::to_string(cur_img));
-
-        img.gray_world_wb(wb_intensity, wb_intensity_threshold);
-        img.write_ppm(output_prefix + "wb_" + std::to_string(cur_img));
-
-        img.debayer();
+        img.convert_depth(8);
         img.write_ppm(output_prefix + std::to_string(cur_img));
-
-        // imgs.push_back(img);
-        if (cur_img > 0 && cur_img < 4) imgs.push_back(img);
     }
 
     MertensExposure m(imgs);
-    Image final = m.fuse();
-    /*
-    final.write_ppm(output_prefix + "mertens_norm");
+    Image final;
+    {
+        ScopedTimer t("Mertens");
+        final = m.fuse();
+    }
 
-    final.gray_world_wb(wb_intensity, wb_intensity_threshold);
-    final.write_ppm(output_prefix + "mertens_wb");
-
-    final.debayer();
-    */
+    final.convert_depth(8);
     final.write_ppm(output_prefix + "mertens");
+
+    ScopedTimer::print_stats();
 
     return 0;
 #endif
