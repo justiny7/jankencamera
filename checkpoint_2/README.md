@@ -56,6 +56,7 @@ The bottleneck is probably due to the large number of Gaussian convolutions (sli
 
 ## Next steps
 I plan on applying some of these optimizations:
+- Switching from floats to fixed-precision integers
 - Fusing steps in the Mertens pipeline (e.g. multiply-add)
 - Rewriting some of the core algorithms as VideoCore GPU kernels (e.g. Gaussian convolution)
 - Faster memory allocator (arena allocator on top of pre-allocated kernel memory?)
