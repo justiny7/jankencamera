@@ -16,10 +16,11 @@ LDFLAGS = -T $(LINKER_SCRIPT) -nostdlib -mfloat-abi=hard -mfpu=vfp
 
 # directories
 SRC_DIR   = src
+KERNEL_DIR = kernels
 BUILD_DIR = build
 
 # sources
-SRCS_QASM = $(wildcard $(SRC_DIR)/*.qasm)
+SRCS_QASM = $(wildcard $(KERNEL_DIR)/*.qasm)
 SRCS_C = $(wildcard $(SRC_DIR)/*.c) $(SRCS_QASM:.qasm=.c)
 SRCS_S = $(wildcard $(SRC_DIR)/*.S)
 
@@ -52,9 +53,11 @@ $(BUILD_DIR)/%.c.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # qasm rules
-.PRECIOUS: $(SRC_DIR)/%.c $(SRC_DIR)/%.h
-$(SRC_DIR)/%.c: $(SRC_DIR)/%.qasm
-	/opt/homebrew/opt/vc4asm/bin/vc4asm -h $(SRC_DIR)/$*.h -c $(SRC_DIR)/$*.c $<
+.PRECIOUS: $(KERNEL_DIR)/%.c
+$(KERNEL_DIR)/%.c $(KERNEL_DIR)/%.h &: $(KERNEL_DIR)/%.qasm
+	/opt/homebrew/opt/vc4asm/bin/vc4asm -h $(KERNEL_DIR)/$*.h -c $(KERNEL_DIR)/$*.c $<
+
+$(OBJS): $(SRCS_QASM:$(KERNEL_DIR)/%.qasm=$(KERNEL_DIR)/%.h)
 
 clean:
 	rm -rf $(BUILD_DIR) kernel.img
