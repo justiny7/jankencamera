@@ -6,6 +6,14 @@
 
 #include <stddef.h>
 
+#define SAFETY_CHECK 0
+
+#if SAFETY_CHECK
+#define assert(...) assert(__VA_ARGS__)
+#else
+#define assert(...)
+#endif
+
 #define LUMA_R 0.299f
 #define LUMA_G 0.587f
 #define LUMA_B 0.114f
@@ -94,14 +102,12 @@ void img_gray_world_wb(Image* img) {
     assert(img->fmt == PIXEL_GRAY, "white balance: image must be gray");
 
     float avg[4] = { 0.f, 0.f, 0.f, 0.f };
-    u32 cnt[4] = { 0, 0, 0, 0 };
     for (u32 i = 0; i < img->size; i++) {
         u32 c = get_bayer_channel(img, i);
         avg[c] += img->data[i];
-        cnt[c]++;
     }
 
-    for (u32 i = 0; i < 4; i++) avg[i] /= cnt[i];
+    for (u32 i = 0; i < 4; i++) avg[i] /= 4.f;
 
     float g_avg = (avg[1] + avg[2]) / 2;
     for (u32 i = 0; i < img->size; i++) {
@@ -125,39 +131,30 @@ void img_debayer(Image* img) {
             int yl = (y == 0 ? s : -s);
             int yr = (y == img->height - 1 ? -s : s);
 
-            float p = img->data[i];
-            float pl = img->data[i + xl];
-            float pul = img->data[i + yl + xl];
-            float pu = img->data[i + yl];
-            float pur = img->data[i + yl + xr];
-            float pr = img->data[i + xr];
-            float pdr = img->data[i + yr + xr];
-            float pd = img->data[i + yr];
-            float pdl = img->data[i + yr + xl];
-
-            float r, g, b;
+            float r = 0, g = 0, b = 0;
+            float* d = &img->data[i];
 
             u32 channel = get_bayer_channel(img, i);
             switch (channel) {
                 case 0: // R
-                    r = p;
-                    g = (pl + pu + pr + pd) / 4.f;
-                    b = (pul + pur + pdl + pdr) / 4.f;
+                    r = d[0];
+                    g = (d[xl] + d[xr] + d[yl] + d[yr]) / 4.f;
+                    b = (d[xl + yl] + d[xl + yr] + d[xr + yl] + d[xr + yr]) / 4.f;
                     break;
                 case 1: // G1
-                    r = (pl + pr) / 2.f;
-                    g = p;
-                    b = (pu + pd) / 2.f;
+                    r = (d[xl] + d[xr]) / 2.f;
+                    g = d[0];
+                    b = (d[yl] + d[yr]) / 2.f;
                     break;
                 case 2: // G2
-                    r = (pu + pd) / 2.f;
-                    g = p;
-                    b = (pl + pr) / 2.f;
+                    r = (d[yl] + d[yr]) / 2.f;
+                    g = d[0];
+                    b = (d[xl] + d[xr]) / 2.f;
                     break;
                 case 3: // B
-                    r = (pul + pur + pdl + pdr) / 4.f;
-                    g = (pl + pu + pr + pd) / 4.f;
-                    b = p;
+                    r = (d[xl + yl] + d[xl + yr] + d[xr + yl] + d[xr + yr]) / 4.f;
+                    g = (d[xl] + d[xr] + d[yl] + d[yr]) / 4.f;
+                    b = d[0];
                     break;
             }
 
@@ -171,6 +168,220 @@ void img_debayer(Image* img) {
     img->data = new_data;
     img->fmt = PIXEL_RGB;
     img->is_bayer = false;
+}
+void img_debayer_pipeline(Image* img, u32 white_lvl, u32 black_lvl) {
+    assert(img->is_bayer, "debayer pipeline: image must be bayer");
+    assert(img->fmt == PIXEL_GRAY, "debayer pipeline: image must be gray");
+
+    float diff = white_lvl - black_lvl;
+    float avg[4] = { 0.f, 0.f, 0.f, 0.f };
+
+    for (u32 i = 0; i < img->size; i++) {
+        u32 c = get_bayer_channel(img, i);
+
+        img->data[i] = clampf(img->data[i] - black_lvl, 0.f, diff);
+        img->data[i] *= 1.f * pixel_max(img->depth) / diff;
+        avg[c] += img->data[i];
+    }
+
+    for (u32 i = 0; i < 4; i++) avg[i] /= 4.f;
+
+    float g_avg = (avg[1] + avg[2]) / 2;
+    float* new_data = kmalloc(img->size * 3 * sizeof(float));
+    for (u32 y = 0; y < img->height; y++) {
+        for (u32 x = 0; x < img->width; x++) {
+            u32 s = img->width;
+            u32 i = y * s + x;
+
+            u32 channel = get_bayer_channel(img, i);
+            float gain = g_avg / avg[channel];
+            img->data[i] = clampf(gain * img->data[i], 0.f, (float) pixel_max(img->depth));
+
+            int xl = (x == 0 ? 1 : -1);
+            int xr = (x == img->width - 1 ? -1 : 1);
+            int yl = (y == 0 ? s : -s);
+            int yr = (y == img->height - 1 ? -s : s);
+
+            float r = 0, g = 0, b = 0;
+            float* d = &img->data[i];
+
+            switch (channel) {
+                case 0: // R
+                    r = d[0];
+                    g = (d[xl] + d[xr] + d[yl] + d[yr]) / 4.f;
+                    b = (d[xl + yl] + d[xl + yr] + d[xr + yl] + d[xr + yr]) / 4.f;
+                    break;
+                case 1: // G1
+                    r = (d[xl] + d[xr]) / 2.f;
+                    g = d[0];
+                    b = (d[yl] + d[yr]) / 2.f;
+                    break;
+                case 2: // G2
+                    r = (d[yl] + d[yr]) / 2.f;
+                    g = d[0];
+                    b = (d[xl] + d[xr]) / 2.f;
+                    break;
+                case 3: // B
+                    r = (d[xl + yl] + d[xl + yr] + d[xr + yl] + d[xr + yr]) / 4.f;
+                    g = (d[xl] + d[xr] + d[yl] + d[yr]) / 4.f;
+                    b = d[0];
+                    break;
+            }
+
+            new_data[i * 3] = r;
+            new_data[i * 3 + 1] = g;
+            new_data[i * 3 + 2] = b;
+        }
+    }
+
+    kfree(img->data);
+    img->data = new_data;
+    img->fmt = PIXEL_RGB;
+    img->is_bayer = false;
+}
+void img_debayer_pipeline_to_fb(Image* img, u32* fb,
+        u32 white_lvl, u32 black_lvl) {
+    assert(img->is_bayer, "debayer pipeline to fb: image must be bayer");
+    assert(img->fmt == PIXEL_GRAY, "debayer pipeline to fb: image must be gray");
+    assert(img->depth == 8 || img->depth == 10,
+            "debayer pipeline to fb: only support 8/10 bit depth");
+
+    float diff = white_lvl - black_lvl;
+    float avg[4] = { 0.f, 0.f, 0.f, 0.f };
+
+    float pmax = (float) pixel_max(img->depth);
+    float mul = pmax / diff;
+    for (u32 i = 0; i < img->size; i++) {
+        u32 c = get_bayer_channel(img, i);
+
+        img->data[i] = clampf(img->data[i] - black_lvl, 0.f, diff) * mul;
+        avg[c] += img->data[i];
+    }
+
+    for (u32 i = 0; i < 4; i++) avg[i] /= 4.f;
+
+    float g_avg = (avg[1] + avg[2]) / 2;
+    u32 shift = img->depth - 8;
+    for (u32 y = 0; y < img->height; y++) {
+        for (u32 x = 0; x < img->width; x++) {
+            u32 s = img->width;
+            u32 i = y * s + x;
+
+            u32 channel = get_bayer_channel(img, i);
+            float gain = g_avg / avg[channel];
+            img->data[i] = clampf(gain * img->data[i], 0.f, pmax);
+
+            int xl = (x == 0 ? 1 : -1);
+            int xr = (x == img->width - 1 ? -1 : 1);
+            int yl = (y == 0 ? s : -s);
+            int yr = (y == img->height - 1 ? -s : s);
+
+            float r = 0, g = 0, b = 0;
+            float* d = &img->data[i];
+
+            switch (channel) {
+                case 0: // R
+                    r = d[0];
+                    g = (d[xl] + d[xr] + d[yl] + d[yr]) / 4.f;
+                    b = (d[xl + yl] + d[xl + yr] + d[xr + yl] + d[xr + yr]) / 4.f;
+                    break;
+                case 1: // G1
+                    r = (d[xl] + d[xr]) / 2.f;
+                    g = d[0];
+                    b = (d[yl] + d[yr]) / 2.f;
+                    break;
+                case 2: // G2
+                    r = (d[yl] + d[yr]) / 2.f;
+                    g = d[0];
+                    b = (d[xl] + d[xr]) / 2.f;
+                    break;
+                case 3: // B
+                    r = (d[xl + yl] + d[xl + yr] + d[xr + yl] + d[xr + yr]) / 4.f;
+                    g = (d[xl] + d[xr] + d[yl] + d[yr]) / 4.f;
+                    b = d[0];
+                    break;
+            }
+
+            u32 ri = ((u32) r) >> shift;
+            u32 gi = ((u32) g) >> shift;
+            u32 bi = ((u32) b) >> shift;
+            fb[i] = (ri << 16) | (gi << 8) | bi;
+        }
+    }
+}
+void img_debayer_pipeline_to_fb_frame(CameraFrame* frame, u32* fb,
+        u32 white_lvl, u32 black_lvl) {
+    CameraConfig cfg = frame->cfg;
+    assert(cfg->fmt == CAM_FMT_BAYER_10, "only support 10-bit depth");
+
+    Image img;
+    img_init(&img, cfg.width, cfg.height, cfg.fmt, PIXEL_GRAY);
+
+    float diff = white_lvl - black_lvl;
+    float avg[4] = { 0.f, 0.f, 0.f, 0.f };
+
+    uint16_t* buf = frame->buf->buf;
+    float pmax = (float) pixel_max(img.depth);
+    float mul = pmax / diff;
+    for (u32 i = 0; i < img.size; i++) {
+        u32 c = get_bayer_channel(&img, i);
+
+        img.data[i] = clampf((float) buf[i] - black_lvl, 0.f, diff) * mul;
+        avg[c] += img.data[i];
+    }
+
+    for (u32 i = 0; i < 4; i++) avg[i] /= 4.f;
+
+    float g_avg = (avg[1] + avg[2]) / 2;
+    u32 shift = img.depth - 8;
+    for (u32 y = 0; y < img.height; y++) {
+        for (u32 x = 0; x < img.width; x++) {
+    // for (u32 y = 1; y < img.height - 1; y++) {
+        // for (u32 x = 1; x < img.width - 1; x++) {
+            u32 s = img.width;
+            u32 i = y * s + x;
+
+            u32 channel = get_bayer_channel(&img, i);
+            float gain = g_avg / avg[channel];
+            img.data[i] = clampf(gain * img.data[i], 0.f, pmax);
+
+            if (y > 1 && x > 1) {
+                u32 j = i - 1 - s;
+                float r = 0, g = 0, b = 0;
+                float* d = &img.data[j];
+
+                switch (channel ^ 0x3) { // since we're doing up diagonal
+                    case 0: // R
+                        r = d[0];
+                        g = (d[-1] + d[1] + d[-s] + d[s]) / 4.f;
+                        b = (d[-1 + -s] + d[-1 + s] + d[1 + -s] + d[1 + s]) / 4.f;
+                        break;
+                    case 1: // G1
+                        r = (d[-1] + d[1]) / 2.f;
+                        g = d[0];
+                        b = (d[-s] + d[s]) / 2.f;
+                        break;
+                    case 2: // G2
+                        r = (d[-s] + d[s]) / 2.f;
+                        g = d[0];
+                        b = (d[-1] + d[1]) / 2.f;
+                        break;
+                    case 3: // B
+                        r = (d[-1 + -s] + d[-1 + s] + d[1 + -s] + d[1 + s]) / 4.f;
+                        g = (d[-1] + d[1] + d[-s] + d[s]) / 4.f;
+                        b = d[0];
+                        break;
+                }
+
+                u32 ri = ((u32) r) >> shift;
+                u32 gi = ((u32) g) >> shift;
+                u32 bi = ((u32) b) >> shift;
+                fb[j] = (ri << 16) | (gi << 8) | bi;
+            }
+        }
+    }
+
+    img_free(&img);
 }
 
 static u32 num_digits(u32 x) {
@@ -248,6 +459,25 @@ void img_save_ppm(Image* img, const char* filename) {
 
     fat_write_file(filename, buf, nbytes);
     kfree(buf);
+}
+void img_write_framebuffer(Image* img, u32* fb) {
+    assert(img->depth == 8 || img->depth == 10,
+            "image write framebuffer: only supporting 8- or 10-bit depths");
+
+    u32 shift = img->depth - 8;
+    if (img->fmt == PIXEL_GRAY) {
+        for (u32 i = 0; i < img->size; i++) {
+            u32 col = ((u32) img->data[i]) >> shift;
+            fb[i] = (col << 16) | (col << 8) | col;
+        }
+    } else {
+        for (u32 i = 0; i < img->size; i++) {
+            u32 r = ((u32) img->data[i * 3]) >> shift;
+            u32 g = ((u32) img->data[i * 3 + 1]) >> shift;
+            u32 b = ((u32) img->data[i * 3 + 2]) >> shift;
+            fb[i] = (r << 16) | (g << 8) | b;
+        }
+    }
 }
 
 static bool in_bounds(const Image* img, u32 y, u32 x, u32 c) {

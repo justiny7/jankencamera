@@ -155,6 +155,7 @@ bool camera_capture_frame(CameraFrame* frame) {
     frame->buf = ready_buf;
     frame->size = g_config.stride * g_config.height;
     frame->sequence = g_sequence++;
+    frame->cfg = g_config;
     return true;
 }
 bool camera_capture_frame_shot(CameraFrame* frame, CameraShot shot) {
