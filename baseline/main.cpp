@@ -75,7 +75,7 @@ int main() {
         imgs.push_back(img);
 
         img.convert_depth(8);
-        img.write_ppm(output_prefix + std::to_string(cur_img));
+        // img.write_ppm(output_prefix + std::to_string(cur_img));
     }
 
     MertensExposure m(imgs);
@@ -86,7 +86,7 @@ int main() {
     }
 
     final.convert_depth(8);
-    final.write_ppm(output_prefix + "mertens");
+    final.write_ppm(output_prefix + "mertens_chroma");
 
     ScopedTimer::print_stats();
 

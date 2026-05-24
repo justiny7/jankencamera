@@ -193,6 +193,14 @@ Image MertensExposure::compute_saturation_weight(const Image& in) {
         float db = data[i * 3 + 2] - avg;
         float std = std::sqrt((dr * dr + dg * dg + db * db) / 3.f);
         out.set_data_at(i, std);
+
+        /*
+        // Chroma approximation
+        float r = data[i * 3];
+        float g = data[i * 3 + 1];
+        float b = data[i * 3 + 2];
+        out.set_data_at(i, std::max({r, g, b}) - std::min({r, g, b}));
+        */
     }
 
     return out;
