@@ -92,9 +92,9 @@ void img_black_white_norm(Image* img, u32 white_lvl, u32 black_lvl) {
     assert(img->fmt == PIXEL_GRAY, "bw norm: image must be gray");
 
     float diff = white_lvl - black_lvl;
+    float mul = (float) pixel_max(img->depth) / diff;
     for (u32 i = 0; i < img->size; i++) {
-        img->data[i] = clampf(img->data[i] - black_lvl, 0.f, diff);
-        img->data[i] *= 1.f * pixel_max(img->depth) / diff;
+        img->data[i] = clampf(img->data[i] - black_lvl, 0.f, diff) * mul;
     }
 }
 void img_gray_world_wb(Image* img) {
@@ -110,10 +110,11 @@ void img_gray_world_wb(Image* img) {
     for (u32 i = 0; i < 4; i++) avg[i] /= 4.f;
 
     float g_avg = (avg[1] + avg[2]) / 2;
+    float pmax = (float) pixel_max(img->depth);
     for (u32 i = 0; i < img->size; i++) {
         u32 c = get_bayer_channel(img, i);
         float gain = g_avg / avg[c];
-        img->data[i] = clampf(gain * img->data[i], 0.f, (float) pixel_max(img->depth));
+        img->data[i] = clampf(gain * img->data[i], 0.f, pmax);
     }
 }
 void img_debayer(Image* img) {
@@ -176,11 +177,12 @@ void img_debayer_pipeline(Image* img, u32 white_lvl, u32 black_lvl) {
     float diff = white_lvl - black_lvl;
     float avg[4] = { 0.f, 0.f, 0.f, 0.f };
 
+    float pmax = (float) pixel_max(img->depth);
+    float mul = pmax / diff;
     for (u32 i = 0; i < img->size; i++) {
         u32 c = get_bayer_channel(img, i);
 
-        img->data[i] = clampf(img->data[i] - black_lvl, 0.f, diff);
-        img->data[i] *= 1.f * pixel_max(img->depth) / diff;
+        img->data[i] = clampf(img->data[i] - black_lvl, 0.f, diff) * mul;
         avg[c] += img->data[i];
     }
 
@@ -195,7 +197,7 @@ void img_debayer_pipeline(Image* img, u32 white_lvl, u32 black_lvl) {
 
             u32 channel = get_bayer_channel(img, i);
             float gain = g_avg / avg[channel];
-            img->data[i] = clampf(gain * img->data[i], 0.f, (float) pixel_max(img->depth));
+            img->data[i] = clampf(gain * img->data[i], 0.f, pmax);
 
             int xl = (x == 0 ? 1 : -1);
             int xr = (x == img->width - 1 ? -1 : 1);
@@ -312,7 +314,7 @@ void img_debayer_pipeline_to_fb(Image* img, u32* fb,
 void img_debayer_pipeline_to_fb_frame(CameraFrame* frame, u32* fb,
         u32 white_lvl, u32 black_lvl) {
     CameraConfig cfg = frame->cfg;
-    assert(cfg->fmt == CAM_FMT_BAYER_10, "only support 10-bit depth");
+    assert(cfg.fmt == CAM_FMT_BAYER_10, "only support 10-bit depth");
 
     Image img;
     img_init(&img, cfg.width, cfg.height, cfg.fmt, PIXEL_GRAY);
