@@ -322,7 +322,7 @@ void img_debayer_pipeline_to_fb_frame(CameraFrame* frame, u32* fb,
     float diff = white_lvl - black_lvl;
     float avg[4] = { 0.f, 0.f, 0.f, 0.f };
 
-    uint16_t* buf = frame->buf->buf;
+    uint16_t* buf = (uint16_t*) frame->buf->buf;
     float pmax = (float) pixel_max(img.depth);
     float mul = pmax / diff;
     for (u32 i = 0; i < img.size; i++) {

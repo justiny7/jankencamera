@@ -10,7 +10,7 @@ RPI_OS_LIB = $(RPI_OS_DIR)/build/librpi_os.a
 LINKER_SCRIPT = $(RPI_OS_DIR)/linker.ld
 
 # compilation flags
-CFLAGS  = -mcpu=arm1176jzf-s -mfloat-abi=hard -mfpu=vfp -fpic -ffreestanding -O2 -Wall -Wextra -nostdlib -Iinclude -I$(RPI_OS_INC)
+CFLAGS  = -mcpu=arm1176jzf-s -mfloat-abi=hard -mfpu=vfp -fpic -ffreestanding -O2 -Wall -Wextra -nostdlib -Iinclude -I$(RPI_OS_INC) -Ikernels
 ASFLAGS = -mcpu=arm1176jzf-s -mfpu=vfp
 LDFLAGS = -T $(LINKER_SCRIPT) -nostdlib -mfloat-abi=hard -mfpu=vfp
 

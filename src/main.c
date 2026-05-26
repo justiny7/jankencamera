@@ -90,8 +90,6 @@ void main() {
     fat_read_file(FILENAME, &file_data, &filesize);
 
     printk("file read, size: %d\n", filesize);
-    for (int i = 0; i < 10; i++) {
-    }
 
     for (int c = 0; c < N; c++) {
         for (u32 i = 0; i < SIZE; i++) {
@@ -117,9 +115,9 @@ void main() {
         img_debayer(img);
         elapsed();
 
-        char* fn = "TMP     PPM";
-        fn[3] = '0' + i;
-        img_save_ppm(img, fn);
+        // char* fn = "TMP     PPM";
+        // fn[3] = '0' + i;
+        // img_save_ppm(img, fn);
     }
 
     MertensExposure m;

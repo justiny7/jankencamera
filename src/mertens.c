@@ -4,6 +4,9 @@
 #include "lib.h"
 #include "sys_timer.h"
 
+#include "kernel.h"
+#include "gaussian_conv.h"
+
 #define VERBOSE 1
 
 static const float LN2 = 0.693147f;
@@ -12,6 +15,17 @@ static const u32 gaussian_kernel_size = 5;
 static const float gaussian_kernel[5] = {
     0.0625f, 0.25f, 0.375f, 0.25f, 0.0625f
 };
+
+// QPU stuff
+#define NUM_QPUS 12
+#define SIMD_WIDTH 16
+
+static const u32 arena_size = 80 * 1024 * 1024;
+static const u32 img_max_size = 1920 * 1080 * sizeof(float);
+static Arena arena;
+static Kernel gconv_k;
+static float* gconv_data[3];
+static bool k_init;
 
 static void convolve_laplacian_abs(Image* out, const Image* in) {
     u32 w = in->width;
@@ -45,9 +59,31 @@ static void convolve_gaussian(Image* out, const Image* in, float mul) {
     u32 h = in->height;
     u32 channels = in->fmt;
 
-    Image temp;
-    img_like(&temp, in);
-    for (u32 y = 0; y < h; y++) {
+    u32 offset = w * channels * 2;
+
+    memcpy(gconv_data[0], in->data, in->size * channels * sizeof(float));
+
+    ////////// horizontal blur
+    kernel_reset_unifs(&gconv_k);
+    for (int q = 0; q < NUM_QPUS; q++) {
+        kernel_load_unif(&gconv_k, q, NUM_QPUS * SIMD_WIDTH);
+        kernel_load_unif(&gconv_k, q, w * (h - 4) * channels);
+        kernel_load_unif(&gconv_k, q, q);
+
+        kernel_load_unif(&gconv_k, q, 1 * channels);
+        kernel_load_unif(&gconv_k, q, mul);
+
+        kernel_load_unif(&gconv_k, q, TO_BUS(gconv_data[0] + offset + q * SIMD_WIDTH));
+        kernel_load_unif(&gconv_k, q, TO_BUS(gconv_data[1] + offset + q * SIMD_WIDTH));
+    }
+
+    kernel_execute(&gconv_k);
+
+    const float ys[4] = { 0, 1, h - 2, h - 1 };
+    const float xs[4] = { 0, 1, w - 2, w - 1 };
+
+    for (u32 yi = 0; yi < 4; yi++) {
+        u32 y = ys[yi];
         for (u32 x = 0; x < w; x++) {
             for (u32 c = 0; c < channels; c++) {
                 float sum = 0.f;
@@ -56,16 +92,67 @@ static void convolve_gaussian(Image* out, const Image* in, float mul) {
                     i32 px = x + k;
                     if (px < 0) px = -px;
                     if (px >= (i32) w) px = 2 * (w - 1) - px;
-                    sum += img_get_data(in, y, px, c) * gaussian_kernel[k + r];
+                    sum += gconv_data[0][(y * w + px) * channels + c] * gaussian_kernel[k + r];
                 }
 
-                img_set_data(&temp, y, x, c, sum * mul);
+                gconv_data[1][(y * w + x) * channels + c] = sum * mul;
+            }
+        }
+    }
+    for (u32 y = 2; y < h - 2; y++) {
+        for (u32 xi = 0; xi < 4; xi++) {
+            u32 x = xs[xi];
+            for (u32 c = 0; c < channels; c++) {
+                float sum = 0.f;
+                
+                for (i32 k = -r; k <= r; k++) {
+                    i32 px = x + k;
+                    if (px < 0) px = -px;
+                    if (px >= (i32) w) px = 2 * (w - 1) - px;
+                    sum += gconv_data[0][(y * w + px) * channels + c] * gaussian_kernel[k + r];
+                }
+
+                gconv_data[1][(y * w + x) * channels + c] = sum * mul;
             }
         }
     }
 
-    img_like(out, in);
-    for (u32 y = 0; y < h; y++) {
+
+    ////////// vertical blur
+    kernel_reset_unifs(&gconv_k);
+    for (int q = 0; q < NUM_QPUS; q++) {
+        kernel_load_unif(&gconv_k, q, NUM_QPUS * SIMD_WIDTH);
+        kernel_load_unif(&gconv_k, q, w * (h - 4) * channels);
+        kernel_load_unif(&gconv_k, q, q);
+
+        kernel_load_unif(&gconv_k, q, w * channels);
+        kernel_load_unif(&gconv_k, q, mul);
+
+        kernel_load_unif(&gconv_k, q, TO_BUS(gconv_data[1] + offset + q * SIMD_WIDTH));
+        kernel_load_unif(&gconv_k, q, TO_BUS(gconv_data[2] + offset + q * SIMD_WIDTH));
+    }
+
+    kernel_execute(&gconv_k);
+
+    for (u32 y = 2; y < h - 2; y++) {
+        for (u32 xi = 0; xi < 4; xi++) {
+            u32 x = xs[xi];
+            for (u32 c = 0; c < channels; c++) {
+                float sum = 0.f;
+                
+                for (i32 k = -r; k <= r; k++) {
+                    i32 py = y + k;
+                    if (py < 0) py = -py;
+                    if (py >= (i32) h) py = 2 * (h - 1) - py;
+                    sum += gconv_data[1][(py * w + x) * channels + c] * gaussian_kernel[k + r];
+                }
+
+                gconv_data[2][(y * w + x) * channels + c] = sum * mul;
+            }
+        }
+    }
+    for (u32 yi = 0; yi < 4; yi++) {
+        u32 y = ys[yi];
         for (u32 x = 0; x < w; x++) {
             for (u32 c = 0; c < channels; c++) {
                 float sum = 0.f;
@@ -74,15 +161,16 @@ static void convolve_gaussian(Image* out, const Image* in, float mul) {
                     i32 py = y + k;
                     if (py < 0) py = -py;
                     if (py >= (i32) h) py = 2 * (h - 1) - py;
-                    sum += img_get_data(&temp, py, x, c) * gaussian_kernel[k + r];
+                    sum += gconv_data[1][(py * w + x) * channels + c] * gaussian_kernel[k + r];
                 }
 
-                img_set_data(out, y, x, c, sum * mul);
+                gconv_data[2][(y * w + x) * channels + c] = sum * mul;
             }
         }
     }
 
-    img_free(&temp);
+    img_like(out, in);
+    memcpy(out->data, gconv_data[2], out->size * channels * sizeof(float));
 }
 static void downsample(Image* out, const Image* in) {
     Image temp;
@@ -91,7 +179,7 @@ static void downsample(Image* out, const Image* in) {
     u32 nw = in->width / 2;
     u32 nh = in->height / 2;
 
-    img_init(out, nw, nh, in->depth, in->fmt);
+    img_init(out, nw, nh, in->depth, in->fmt, in->arena);
     for (u32 y = 0; y < nh; y++) {
         for (u32 x = 0; x < nw; x++) {
             for (u32 c = 0; c < in->fmt; c++) {
@@ -104,7 +192,7 @@ static void downsample(Image* out, const Image* in) {
 }
 static void upsample(Image* out, const Image* in, u32 width, u32 height) {
     Image temp;
-    img_init(&temp, width, height, in->depth, in->fmt);
+    img_init(&temp, width, height, in->depth, in->fmt, in->arena);
 
     for (u32 y = 0; y < in->height; y++) {
         for (u32 x = 0; x < in->width; x++) {
@@ -263,6 +351,17 @@ void mertens_init(MertensExposure* m, Image* imgs, u32 num_imgs) {
     assert(num_imgs > 0, "merten init: need at least one image");
     for (u32 i = 0; i < num_imgs; i++) {
         assert(imgs[i].fmt == PIXEL_RGB, "merten init: images have to be RGB");
+    }
+
+    if (!k_init) {
+        arena_init_qpu(&arena, arena_size);
+        kernel_init(&gconv_k, NUM_QPUS, 7, gaussian_conv, sizeof(gaussian_conv));
+
+        for (u32 i = 0; i < 3; i++) {
+            gconv_data[i] = arena_alloc_align(&arena, img_max_size, 16 * sizeof(float));
+        }
+
+        k_init = true;
     }
 
     m->width = imgs[0].width;
