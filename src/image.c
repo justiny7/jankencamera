@@ -17,7 +17,7 @@
 #define LUMA_R 0.299f
 #define LUMA_G 0.587f
 #define LUMA_B 0.114f
-static float luma(float r, float g, float b) {
+static inline float luma(float r, float g, float b) {
     return r * LUMA_R + g * LUMA_G + b * LUMA_B;
 }
 
@@ -73,7 +73,7 @@ void img_free(Image* img) {
     img->width = img->height = img->size = 0;
 }
 
-static u32 pixel_max(u32 depth) {
+static inline u32 pixel_max(u32 depth) {
     return (1 << depth) - 1;
 }
 static u32 get_bayer_channel(Image* img, u32 i) {
@@ -482,12 +482,12 @@ void img_write_framebuffer(Image* img, u32* fb) {
     }
 }
 
-static bool in_bounds(const Image* img, u32 y, u32 x, u32 c) {
+static inline bool in_bounds(const Image* img, u32 y, u32 x, u32 c) {
     return (y < img->height &&
             x < img->width &&
             c < img->fmt);
 }
-u32 img_get_idx(const Image* img, u32 y, u32 x, u32 c) {
+static inline u32 img_get_idx(const Image* img, u32 y, u32 x, u32 c) {
     assert(in_bounds(img, y, x, c), "get idx: out of bounds");
     return (y * img->width + x) * img->fmt + c;
 }
@@ -522,7 +522,7 @@ void img_to_grayscale(Image* out, const Image* in) {
     }
 }
 
-static bool same_shape(const Image* a, const Image* b) {
+static inline bool same_shape(const Image* a, const Image* b) {
     return (a->width == b->width &&
             a->height == b->height &&
             a->fmt == b->fmt);

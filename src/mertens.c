@@ -179,7 +179,7 @@ static void downsample(Image* out, const Image* in) {
     u32 nw = in->width / 2;
     u32 nh = in->height / 2;
 
-    img_init(out, nw, nh, in->depth, in->fmt, in->arena);
+    img_init(out, nw, nh, in->depth, in->fmt);
     for (u32 y = 0; y < nh; y++) {
         for (u32 x = 0; x < nw; x++) {
             for (u32 c = 0; c < in->fmt; c++) {
@@ -192,7 +192,7 @@ static void downsample(Image* out, const Image* in) {
 }
 static void upsample(Image* out, const Image* in, u32 width, u32 height) {
     Image temp;
-    img_init(&temp, width, height, in->depth, in->fmt, in->arena);
+    img_init(&temp, width, height, in->depth, in->fmt);
 
     for (u32 y = 0; y < in->height; y++) {
         for (u32 x = 0; x < in->width; x++) {

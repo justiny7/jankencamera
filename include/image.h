@@ -51,7 +51,6 @@ void img_debayer_pipeline_to_fb_frame(CameraFrame* frame, u32* fb,
 void img_save_ppm(Image* img, const char* filename);
 void img_write_framebuffer(Image* img, u32* fb);
 
-u32 img_get_idx(const Image* img, u32 y, u32 x, u32 c);
 float img_get_data(const Image* img, u32 y, u32 x, u32 c);
 void img_like(Image* out, const Image* in);
 void img_gray_like(Image* out, const Image* in);
