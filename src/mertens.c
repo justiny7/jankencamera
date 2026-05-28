@@ -3,6 +3,7 @@
 #include "kmem.h"
 #include "lib.h"
 #include "sys_timer.h"
+#include "mmu.h"
 
 #include "kernel.h"
 #include "gaussian_conv.h"
@@ -193,6 +194,7 @@ static void downsample(Image* out, const Image* in) {
 static void upsample(Image* out, const Image* in, u32 width, u32 height) {
     Image temp;
     img_init(&temp, width, height, in->depth, in->fmt);
+    memset(temp.data, 0, temp.size * temp.fmt * sizeof(float));
 
     for (u32 y = 0; y < in->height; y++) {
         for (u32 x = 0; x < in->width; x++) {
@@ -206,63 +208,61 @@ static void upsample(Image* out, const Image* in, u32 width, u32 height) {
     img_free(&temp);
 }
 
-static void compute_saturation_weight(Image* out, const Image* in) {
-    assert(in->fmt == PIXEL_RGB, "saturation: needs RGB");
+static void compute_weight_map(Image* out, const Image* in) {
+    assert(in->fmt == PIXEL_RGB, "compute weight maps: needs RGB");
 
     img_gray_like(out, in);
 
-    const float* data = in->data;
-    for (u32 i = 0; i < in->size; i++) {
-        float avg = (data[i * 3] + data[i * 3 + 1] + data[i * 3 + 2]) / 3.f;
-        float dr = data[i * 3] - avg;
-        float dg = data[i * 3 + 1] - avg;
-        float db = data[i * 3 + 2] - avg;
-        float std = sqrtf((dr * dr + dg * dg + db * db) / 3.f);
-        out->data[i] = std;
-    }
-}
-static void compute_contrast_weight(Image* out, const Image* in) {
-    assert(in->fmt == PIXEL_RGB, "contrast: needs RGB");
-
+    // for contrast
     Image temp;
     img_to_grayscale(&temp, in);
 
-    convolve_laplacian_abs(out, &temp);
-    img_free(&temp);
-}
-static void compute_exposedness_weight(Image* out, const Image* in) {
-    assert(in->fmt == PIXEL_RGB, "exposedness: needs RGB");
-
+    // for exposedness
     const float sigma = 0.2f;
     const float exp_mul = -1.0f / (2.0f * sigma * sigma);
 
-    img_gray_like(out, in);
-
+    u32 w = in->width;
+    u32 h = in->height;
     const float* data = in->data;
-    for (u32 i = 0; i < in->size; i++) {
-        float e = 1.f;
-        for (u32 c = 0; c < 3; c++) {
-            float val = data[i * 3 + c] - 0.5f;
-            e *= expf(val * val * exp_mul);
+    for (u32 y = 0; y < h; y++) {
+        for (u32 x = 0; x < w; x++) {
+            float S = 1.f, C = 1.f, E = 1.f;
+            u32 i = y * w + x;
+
+            {   // saturation
+                float avg = (data[i * 3] + data[i * 3 + 1] + data[i * 3 + 2]) / 3.f;
+                float dr = data[i * 3] - avg;
+                float dg = data[i * 3 + 1] - avg;
+                float db = data[i * 3 + 2] - avg;
+                S = sqrtf((dr * dr + dg * dg + db * db) / 3.f);
+            }
+
+            {   //  exposedness
+                for (u32 c = 0; c < 3; c++) {
+                    float val = data[i * 3 + c] - 0.5f;
+                    E *= expf(val * val * exp_mul);
+                }
+            }
+
+            {   // contrast (Laplacian filter)
+                u32 xl = (x == 0 ? 1 : x - 1);
+                u32 xr = (x == w - 1 ? w - 2 : x + 1);
+                u32 yl = (y == 0 ? 1 : y - 1);
+                u32 yr = (y == h - 1 ? h - 2 : y + 1);
+                C = img_get_data(&temp, y, xl, 0) +
+                    img_get_data(&temp, y, xr, 0) +
+                    img_get_data(&temp, yl, x, 0) +
+                    img_get_data(&temp, yr, x, 0) -
+                    img_get_data(&temp, y, x, 0) * 4.f;
+
+                if (C < 0) C = -C;
+            }
+
+            out->data[i] = S * C * E;
         }
-
-        out->data[i] = e;
-    }
-}
-static void compute_weight_map(Image* out, const Image* in) {
-    Image S, C, E;
-    compute_saturation_weight(&S, in);
-    compute_contrast_weight(&C, in);
-    compute_exposedness_weight(&E, in);
-
-    img_gray_like(out, in);
-    for (u32 i = 0; i < in->size; i++) {
-        out->data[i] = S.data[i] * C.data[i] * E.data[i];
     }
 
-    img_free(&S);
-    img_free(&C);
-    img_free(&E);
+    img_free(&temp);
 }
 
 static void normalize_weight_maps(MertensExposure* m, Image* weight_maps) {
@@ -297,8 +297,8 @@ static void build_laplacian_pyramid(MertensExposure* m, Image** out, const Image
     build_gaussian_pyramid(m, &gauss, in);
 
     Image* pyr = kmalloc(m->num_lvls * sizeof(Image));
+    Image temp;
     for (u32 i = 0; i < m->num_lvls - 1; i++) {
-        Image temp;
         // allocates temp
         upsample(&temp, &gauss[i + 1], gauss[i].width, gauss[i].height);
         // allocates pyr[i]
@@ -310,6 +310,7 @@ static void build_laplacian_pyramid(MertensExposure* m, Image** out, const Image
     for (u32 i = 0; i < m->num_lvls; i++) {
         img_free(&gauss[i]);
     }
+    kfree(gauss);
 
     *out = pyr;
 }
@@ -319,15 +320,12 @@ static void blend_pyramids(MertensExposure* m, Image** out,
     for (u32 i = 0; i < m->num_lvls; i++) {
         // allocates pyr[i]
         img_mul(&pyr[i], &laplacians[0][i], &weights[0][i]);
-        for (u32 j = 1; j < m->num_imgs; j++) {
-            Image temp;
-            img_mul(&temp, &laplacians[j][i], &weights[j][i]);
-            u32 sz = pyr[i].size * pyr[i].fmt;
-            for (u32 k = 0; k < sz; k++) { // don't wanna init again w/ img_sum
-                pyr[i].data[k] += temp.data[k];
-            }
 
-            img_free(&temp);
+        u32 sz = pyr[i].size * pyr[i].fmt;
+        for (u32 j = 1; j < m->num_imgs; j++) {
+            for (u32 k = 0; k < sz; k++) { // laplacian is RGB, weight is gray
+                pyr[i].data[k] += laplacians[j][i].data[k] * weights[j][i].data[k / 3];
+            }
         }
     }
 
@@ -336,8 +334,8 @@ static void blend_pyramids(MertensExposure* m, Image** out,
 static void collapse_pyramid(MertensExposure* m, Image* out, const Image* pyramid) {
     img_copy(out, &pyramid[m->num_lvls - 1]);
 
+    Image temp;
     for (i32 i = m->num_lvls - 2; i >= 0; i--) {
-        Image temp;
         upsample(&temp, out, pyramid[i].width, pyramid[i].height);
 
         img_free(out);
@@ -423,6 +421,7 @@ Image* mertens_fuse(MertensExposure* m) {
     for (u32 i = 0; i < m->num_imgs; i++) {
         img_free(&weight_maps[i]);
     }
+    kfree(weight_maps);
 
 
     Image* blended = kmalloc(m->num_lvls * sizeof(Image));
@@ -436,6 +435,8 @@ Image* mertens_fuse(MertensExposure* m) {
             img_free(&laplacians[i][j]);
             img_free(&weights[i][j]);
         }
+        kfree(laplacians[i]);
+        kfree(weights[i]);
     }
     kfree(laplacians);
     kfree(weights);
@@ -457,6 +458,7 @@ Image* mertens_fuse(MertensExposure* m) {
     for (u32 i = 0; i < m->num_lvls; i++) {
         img_free(&blended[i]);
     }
+    kfree(blended);
 
     return out;
 }

@@ -31,7 +31,6 @@ void img_init(Image* img, u32 width, u32 height, u32 depth, PixelFormat fmt) {
 
     u32 sz = img->size * img->fmt * sizeof(float);
     img->data = kmalloc(sz);
-    memset(img->data, 0, sz);
 }
 void img_init_data(Image* img, u32 width, u32 height, u32 depth, PixelFormat fmt,
         float* data) {
@@ -338,8 +337,6 @@ void img_debayer_pipeline_to_fb_frame(CameraFrame* frame, u32* fb,
     u32 shift = img.depth - 8;
     for (u32 y = 0; y < img.height; y++) {
         for (u32 x = 0; x < img.width; x++) {
-    // for (u32 y = 1; y < img.height - 1; y++) {
-        // for (u32 x = 1; x < img.width - 1; x++) {
             u32 s = img.width;
             u32 i = y * s + x;
 
@@ -548,8 +545,9 @@ void img_mul(Image* out, const Image* a, const Image* b) {
             "img_mul: needs same width/height");
 
     img_like(out, a);
+
+    u32 d = (b->fmt == PIXEL_RGB ? 1 : 3); // alow for broadcasting
     for (u32 i = 0; i < out->size * out->fmt; i++) {
-        u32 d = (b->fmt == PIXEL_RGB ? 1 : 3); // alow for broadcasting
         out->data[i] = a->data[i] * b->data[i / d];
     }
 }
