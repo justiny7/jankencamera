@@ -21,38 +21,22 @@ static const float gaussian_kernel[5] = {
 #define NUM_QPUS 12
 #define SIMD_WIDTH 16
 
-static const u32 arena_size = 80 * 1024 * 1024;
-static const u32 img_max_size = 1920 * 1080 * sizeof(float);
-static Arena arena;
+static const u32 arena_size = 100 * 1024 * 1024;
+static const u32 arena_align = 16 * sizeof(float);
+static Arena data_arena, temp_arena;
 static Kernel gconv_k;
-static float* gconv_data[3];
 static bool k_init;
 
-static void convolve_laplacian_abs(Image* out, const Image* in) {
-    u32 w = in->width;
-    u32 h = in->height;
-    u32 channels = in->fmt;
-
-    img_like(out, in);
-    for (u32 y = 0; y < h; y++) {
-        for (u32 x = 0; x < w; x++) {
-            for (u32 c = 0; c < channels; c++) {
-                u32 xl = (x == 0 ? 1 : x - 1);
-                u32 xr = (x == w - 1 ? w - 2 : x + 1);
-                u32 yl = (y == 0 ? 1 : y - 1);
-                u32 yr = (y == h - 1 ? h - 2 : y + 1);
-                float sum = img_get_data(in, y, xl, c) +
-                    img_get_data(in, y, xr, c) +
-                    img_get_data(in, yl, x, c) +
-                    img_get_data(in, yr, x, c) -
-                    img_get_data(in, y, x, c) * 4.f;
-
-                if (sum < 0) sum = -sum;
-                img_set_data(out, y, x, c, sum);
-            }
-        }
-    }
+static Image* get_empty_imgs(u32 k) {
+    u32 sz = k * sizeof(Image);
+    Image* p = (Image*) kmalloc(sz);
+    memset(p, 0, sz);
+    return p;
 }
+static u32 img_bytes(const Image* img) {
+    return img->size * img->fmt * sizeof(float);
+}
+
 static void convolve_gaussian(Image* out, const Image* in, float mul) {
     i32 r = gaussian_kernel_size / 2;
 
@@ -62,7 +46,13 @@ static void convolve_gaussian(Image* out, const Image* in, float mul) {
 
     u32 offset = w * channels * 2;
 
-    memcpy(gconv_data[0], in->data, in->size * channels * sizeof(float));
+    img_like(out, in);
+
+    u32 temp_sz = temp_arena.size;
+    Image temp = (Image) {
+        .data = arena_alloc_align(&temp_arena, img_bytes(in), arena_align)
+    };
+    img_like(&temp, in);
 
     ////////// horizontal blur
     kernel_reset_unifs(&gconv_k);
@@ -74,8 +64,8 @@ static void convolve_gaussian(Image* out, const Image* in, float mul) {
         kernel_load_unif(&gconv_k, q, 1 * channels);
         kernel_load_unif(&gconv_k, q, mul);
 
-        kernel_load_unif(&gconv_k, q, TO_BUS(gconv_data[0] + offset + q * SIMD_WIDTH));
-        kernel_load_unif(&gconv_k, q, TO_BUS(gconv_data[1] + offset + q * SIMD_WIDTH));
+        kernel_load_unif(&gconv_k, q, TO_BUS(in->data + offset + q * SIMD_WIDTH));
+        kernel_load_unif(&gconv_k, q, TO_BUS(temp.data + offset + q * SIMD_WIDTH));
     }
 
     kernel_execute(&gconv_k);
@@ -93,10 +83,10 @@ static void convolve_gaussian(Image* out, const Image* in, float mul) {
                     i32 px = x + k;
                     if (px < 0) px = -px;
                     if (px >= (i32) w) px = 2 * (w - 1) - px;
-                    sum += gconv_data[0][(y * w + px) * channels + c] * gaussian_kernel[k + r];
+                    sum += in->data[(y * w + px) * channels + c] * gaussian_kernel[k + r];
                 }
 
-                gconv_data[1][(y * w + x) * channels + c] = sum * mul;
+                temp.data[(y * w + x) * channels + c] = sum * mul;
             }
         }
     }
@@ -110,10 +100,10 @@ static void convolve_gaussian(Image* out, const Image* in, float mul) {
                     i32 px = x + k;
                     if (px < 0) px = -px;
                     if (px >= (i32) w) px = 2 * (w - 1) - px;
-                    sum += gconv_data[0][(y * w + px) * channels + c] * gaussian_kernel[k + r];
+                    sum += in->data[(y * w + px) * channels + c] * gaussian_kernel[k + r];
                 }
 
-                gconv_data[1][(y * w + x) * channels + c] = sum * mul;
+                temp.data[(y * w + x) * channels + c] = sum * mul;
             }
         }
     }
@@ -129,8 +119,8 @@ static void convolve_gaussian(Image* out, const Image* in, float mul) {
         kernel_load_unif(&gconv_k, q, w * channels);
         kernel_load_unif(&gconv_k, q, mul);
 
-        kernel_load_unif(&gconv_k, q, TO_BUS(gconv_data[1] + offset + q * SIMD_WIDTH));
-        kernel_load_unif(&gconv_k, q, TO_BUS(gconv_data[2] + offset + q * SIMD_WIDTH));
+        kernel_load_unif(&gconv_k, q, TO_BUS(temp.data + offset + q * SIMD_WIDTH));
+        kernel_load_unif(&gconv_k, q, TO_BUS(out->data + offset + q * SIMD_WIDTH));
     }
 
     kernel_execute(&gconv_k);
@@ -145,10 +135,10 @@ static void convolve_gaussian(Image* out, const Image* in, float mul) {
                     i32 py = y + k;
                     if (py < 0) py = -py;
                     if (py >= (i32) h) py = 2 * (h - 1) - py;
-                    sum += gconv_data[1][(py * w + x) * channels + c] * gaussian_kernel[k + r];
+                    sum += temp.data[(py * w + x) * channels + c] * gaussian_kernel[k + r];
                 }
 
-                gconv_data[2][(y * w + x) * channels + c] = sum * mul;
+                out->data[(y * w + x) * channels + c] = sum * mul;
             }
         }
     }
@@ -162,25 +152,29 @@ static void convolve_gaussian(Image* out, const Image* in, float mul) {
                     i32 py = y + k;
                     if (py < 0) py = -py;
                     if (py >= (i32) h) py = 2 * (h - 1) - py;
-                    sum += gconv_data[1][(py * w + x) * channels + c] * gaussian_kernel[k + r];
+                    sum += temp.data[(py * w + x) * channels + c] * gaussian_kernel[k + r];
                 }
 
-                gconv_data[2][(y * w + x) * channels + c] = sum * mul;
+                out->data[(y * w + x) * channels + c] = sum * mul;
             }
         }
     }
 
-    img_like(out, in);
-    memcpy(out->data, gconv_data[2], out->size * channels * sizeof(float));
+    arena_dealloc_to(&temp_arena, temp_sz);
+    mmu_flush_dcache();
 }
-static void downsample(Image* out, const Image* in) {
-    Image temp;
-    convolve_gaussian(&temp, in, 1.f);
-
-    u32 nw = in->width / 2;
-    u32 nh = in->height / 2;
-
+static void downsample(Image* out, const Image* in, Arena* arena) {
+    const u32 nw = in->width / 2;
+    const u32 nh = in->height / 2;
+    out->data = arena_alloc_align(arena,
+            nw * nh * in->fmt * sizeof(float), arena_align);
     img_init(out, nw, nh, in->depth, in->fmt);
+
+    u32 temp_sz = temp_arena.size;
+    Image temp = (Image) {
+        .data = arena_alloc_align(&temp_arena, img_bytes(in), arena_align)
+    };
+    convolve_gaussian(&temp, in, 1.f);
     for (u32 y = 0; y < nh; y++) {
         for (u32 x = 0; x < nw; x++) {
             for (u32 c = 0; c < in->fmt; c++) {
@@ -189,12 +183,20 @@ static void downsample(Image* out, const Image* in) {
         }
     }
 
-    img_free(&temp);
+    arena_dealloc_to(&temp_arena, temp_sz);
+    mmu_flush_dcache();
 }
-static void upsample(Image* out, const Image* in, u32 width, u32 height) {
-    Image temp;
+static void upsample(Image* out, const Image* in, u32 width, u32 height, Arena* arena) {
+    out->data = arena_alloc_align(arena,
+            width * height * in->fmt * sizeof(float), arena_align);
+
+    u32 temp_sz = temp_arena.size;
+    Image temp = (Image) {
+        .data = arena_alloc_align(arena,
+                width * height * in->fmt * sizeof(float), arena_align)
+    };
     img_init(&temp, width, height, in->depth, in->fmt);
-    memset(temp.data, 0, temp.size * temp.fmt * sizeof(float));
+    memset(temp.data, 0, img_bytes(&temp));
 
     for (u32 y = 0; y < in->height; y++) {
         for (u32 x = 0; x < in->width; x++) {
@@ -205,16 +207,21 @@ static void upsample(Image* out, const Image* in, u32 width, u32 height) {
     }
 
     convolve_gaussian(out, &temp, 2.f);
-    img_free(&temp);
+    arena_dealloc_to(&temp_arena, temp_sz);
+    mmu_flush_dcache();
 }
 
 static void compute_weight_map(Image* out, const Image* in) {
     assert(in->fmt == PIXEL_RGB, "compute weight maps: needs RGB");
 
+    out->data = arena_alloc_align(&data_arena, img_bytes(in), arena_align);
     img_gray_like(out, in);
 
     // for contrast
-    Image temp;
+    u32 temp_sz = temp_arena.size;
+    Image temp = (Image) {
+        .data = arena_alloc_align(&temp_arena, img_bytes(in), arena_align)
+    };
     img_to_grayscale(&temp, in);
 
     // for exposedness
@@ -262,7 +269,8 @@ static void compute_weight_map(Image* out, const Image* in) {
         }
     }
 
-    img_free(&temp);
+    arena_dealloc_to(&temp_arena, temp_sz);
+    mmu_flush_dcache();
 }
 
 static void normalize_weight_maps(MertensExposure* m, Image* weight_maps) {
@@ -281,44 +289,51 @@ static void normalize_weight_maps(MertensExposure* m, Image* weight_maps) {
             }
         }
     }
+    mmu_flush_dcache();
 }
-static void build_gaussian_pyramid(MertensExposure* m, Image** out, const Image* in) {
-    Image* pyr = kmalloc(m->num_lvls * sizeof(Image));
+static void build_gaussian_pyramid(MertensExposure* m, Image** out, const Image* in,
+        Arena* arena) {
+    Image* pyr = get_empty_imgs(m->num_lvls);
 
+    pyr[0].data = arena_alloc_align(arena, img_bytes(in), arena_align);
     img_copy(&pyr[0], in);
     for (u32 i = 1; i < m->num_lvls; i++) {
-        downsample(&pyr[i], &pyr[i - 1]);
+        downsample(&pyr[i], &pyr[i - 1], arena);
     }
 
     *out = pyr;
+    mmu_flush_dcache();
 }
 static void build_laplacian_pyramid(MertensExposure* m, Image** out, const Image* in) {
+    u32 temp_sz = temp_arena.size;
     Image* gauss;
-    build_gaussian_pyramid(m, &gauss, in);
+    build_gaussian_pyramid(m, &gauss, in, &temp_arena);
 
-    Image* pyr = kmalloc(m->num_lvls * sizeof(Image));
+    Image* pyr = get_empty_imgs(m->num_lvls);
     Image temp;
     for (u32 i = 0; i < m->num_lvls - 1; i++) {
-        // allocates temp
-        upsample(&temp, &gauss[i + 1], gauss[i].width, gauss[i].height);
-        // allocates pyr[i]
+        u32 temp_sz2 = temp_arena.size;
+        upsample(&temp, &gauss[i + 1], gauss[i].width, gauss[i].height, &temp_arena);
+
+        pyr[i].data = arena_alloc_align(&data_arena, img_bytes(&temp), arena_align);
         img_sub(&pyr[i], &gauss[i], &temp);
-        img_free(&temp);
+
+        arena_dealloc_to(&temp_arena, temp_sz2);
     }
+    pyr[m->num_lvls - 1].data = arena_alloc_align(&data_arena, img_bytes(&temp), arena_align);
     img_copy(&pyr[m->num_lvls - 1], &gauss[m->num_lvls - 1]);
 
-    for (u32 i = 0; i < m->num_lvls; i++) {
-        img_free(&gauss[i]);
-    }
     kfree(gauss);
 
     *out = pyr;
+    arena_dealloc_to(&temp_arena, temp_sz);
+    mmu_flush_dcache();
 }
 static void blend_pyramids(MertensExposure* m, Image** out,
         Image** laplacians, Image** weights) {
-    Image* pyr = kmalloc(m->num_lvls * sizeof(Image));
+    Image* pyr = get_empty_imgs(m->num_lvls);
     for (u32 i = 0; i < m->num_lvls; i++) {
-        // allocates pyr[i]
+        pyr[i].data = arena_alloc_align(&data_arena, img_bytes(&laplacians[0][i]), arena_align);
         img_mul(&pyr[i], &laplacians[0][i], &weights[0][i]);
 
         u32 sz = pyr[i].size * pyr[i].fmt;
@@ -330,19 +345,28 @@ static void blend_pyramids(MertensExposure* m, Image** out,
     }
 
     *out = pyr;
+    mmu_flush_dcache();
 }
 static void collapse_pyramid(MertensExposure* m, Image* out, const Image* pyramid) {
+    u32 data_sz = data_arena.size;
+    u32 temp_sz = temp_arena.size;
+
+    out->data = arena_alloc_align(&data_arena,
+            img_bytes(&pyramid[m->num_lvls - 1]), arena_align);
     img_copy(out, &pyramid[m->num_lvls - 1]);
 
     Image temp;
     for (i32 i = m->num_lvls - 2; i >= 0; i--) {
-        upsample(&temp, out, pyramid[i].width, pyramid[i].height);
+        upsample(&temp, out, pyramid[i].width, pyramid[i].height, &temp_arena);
 
-        img_free(out);
+        arena_dealloc_to(&data_arena, data_sz);
+        out->data = arena_alloc_align(&data_arena, img_bytes(&pyramid[i]), arena_align);
         img_add(out, &temp, &pyramid[i]);
 
-        img_free(&temp);
+        arena_dealloc_to(&temp_arena, temp_sz);
     }
+
+    mmu_flush_dcache();
 }
 
 void mertens_init(MertensExposure* m, Image* imgs, u32 num_imgs) {
@@ -352,12 +376,9 @@ void mertens_init(MertensExposure* m, Image* imgs, u32 num_imgs) {
     }
 
     if (!k_init) {
-        arena_init_qpu(&arena, arena_size);
+        arena_init_qpu(&data_arena, arena_size);
+        arena_init_qpu(&temp_arena, arena_size);
         kernel_init(&gconv_k, NUM_QPUS, 7, gaussian_conv, sizeof(gaussian_conv));
-
-        for (u32 i = 0; i < 3; i++) {
-            gconv_data[i] = arena_alloc_align(&arena, img_max_size, 16 * sizeof(float));
-        }
 
         k_init = true;
     }
@@ -370,6 +391,23 @@ void mertens_init(MertensExposure* m, Image* imgs, u32 num_imgs) {
     m->num_lvls = max(1, (u32) (logf(1.f * min(m->width, m->height)) / LN2) - 2);
     m->imgs = imgs;
     m->pmax = (1 << m->depth) - 1;
+
+    for (u32 i = 0; i < num_imgs; i++) {
+        Image* img = &m->imgs[i];
+        if (img->qpu_mem) continue;
+
+        printk("mertens init: realloc img %d to GPU mem\n", i);
+
+        u32 sz = img_bytes(img);
+        float* new_data = arena_alloc_align(&data_arena, sz, arena_align);
+        memcpy(new_data, img->data, sz);
+        kfree(img->data);
+
+        img->data = new_data;
+        img->qpu_mem = true;
+    }
+
+    mmu_flush_dcache();
 }
 
 
@@ -396,8 +434,7 @@ Image* mertens_fuse(MertensExposure* m) {
     }
     elapsed();
 
-
-    Image* weight_maps = kmalloc(m->num_imgs * sizeof(Image));
+    Image* weight_maps = get_empty_imgs(m->num_imgs);
     now("computing weight maps...\n");
     for (u32 i = 0; i < m->num_imgs; i++) {
         compute_weight_map(&weight_maps[i], &m->imgs[i]);
@@ -413,40 +450,21 @@ Image* mertens_fuse(MertensExposure* m) {
     now("building pyramids...\n");
     for (u32 i = 0; i < m->num_imgs; i++) {
         build_laplacian_pyramid(m, &laplacians[i], &m->imgs[i]);
-        build_gaussian_pyramid(m, &weights[i], &weight_maps[i]);
+        build_gaussian_pyramid(m, &weights[i], &weight_maps[i], &data_arena);
     }
     elapsed();
 
-    // free weight maps
-    for (u32 i = 0; i < m->num_imgs; i++) {
-        img_free(&weight_maps[i]);
-    }
-    kfree(weight_maps);
 
-
-    Image* blended = kmalloc(m->num_lvls * sizeof(Image));
+    Image* blended = get_empty_imgs(m->num_lvls);
     now("blending...\n");
     blend_pyramids(m, &blended, laplacians, weights);
     elapsed();
 
-    // free laplacians and gaussian pyramids
-    for (u32 i = 0; i < m->num_imgs; i++) {
-        for (u32 j = 0; j < m->num_lvls; j++) {
-            img_free(&laplacians[i][j]);
-            img_free(&weights[i][j]);
-        }
-        kfree(laplacians[i]);
-        kfree(weights[i]);
-    }
-    kfree(laplacians);
-    kfree(weights);
 
-
-    Image* out = kmalloc(sizeof(Image));
+    Image* out = get_empty_imgs(1);
     now("collapsing...\n");
     collapse_pyramid(m, out, blended);
     elapsed();
-
 
     now("scaling back...\n");
     for (u32 i = 0; i < m->img_size * 3; i++) {
@@ -454,12 +472,26 @@ Image* mertens_fuse(MertensExposure* m) {
     }
     elapsed();
 
-    // free blended pyramid
-    for (u32 i = 0; i < m->num_lvls; i++) {
-        img_free(&blended[i]);
+    // copy to CPU
+    Image* out_cpu = get_empty_imgs(1);
+    img_copy(out_cpu, out);
+
+    printk("Data arena usage: %d bytes (%f MiB)\n",
+            data_arena.size, 1.f * data_arena.size / (1024 * 1024));
+
+    // free everything
+    kfree(weight_maps);
+    for (u32 i = 0; i < m->num_imgs; i++) {
+        kfree(laplacians[i]);
+        kfree(weights[i]);
     }
+    kfree(laplacians);
+    kfree(weights);
     kfree(blended);
 
-    return out;
+    arena_dealloc_to(&data_arena, 0);
+    arena_dealloc_to(&temp_arena, 0);
+
+    return out_cpu;
 }
 

@@ -3,6 +3,7 @@
 #include "math.h"
 #include "lib.h"
 #include "fat.h"
+#include "mmu.h"
 
 #include <stddef.h>
 
@@ -29,11 +30,13 @@ void img_init(Image* img, u32 width, u32 height, u32 depth, PixelFormat fmt) {
     img->fmt = fmt;
     img->is_bayer = false;
 
-    u32 sz = img->size * img->fmt * sizeof(float);
-    img->data = kmalloc(sz);
+    if (!img->data) {
+        img->data = kmalloc(img->size * img->fmt * sizeof(float));
+        img->qpu_mem = false;
+    }
 }
 void img_init_data(Image* img, u32 width, u32 height, u32 depth, PixelFormat fmt,
-        float* data) {
+        float* data, bool qpu_mem) {
     img->width = width;
     img->height = height;
     img->size = width * height;
@@ -41,6 +44,7 @@ void img_init_data(Image* img, u32 width, u32 height, u32 depth, PixelFormat fmt
     img->fmt = fmt;
     img->is_bayer = false;
     img->data = data;
+    img->qpu_mem = qpu_mem;
 }
 void img_init_bayer(Image* img, u32 width, u32 height, u32 depth,
         uint8_t* buf, BayerFormat bfmt) {
@@ -67,7 +71,7 @@ void img_init_frame(Image* img, CameraFrame* frame) {
             frame->buf->buf, cfg.bayer_fmt);
 }
 void img_free(Image* img) {
-    kfree(img->data);
+    if (!img->qpu_mem) kfree(img->data);
     img->data = NULL;
     img->width = img->height = img->size = 0;
 }
@@ -531,6 +535,8 @@ void img_add(Image* out, const Image* a, const Image* b) {
     for (u32 i = 0; i < out->size * out->fmt; i++) {
         out->data[i] = a->data[i] + b->data[i];
     }
+
+    mmu_flush_dcache();
 }
 void img_sub(Image* out, const Image* a, const Image* b) {
     assert(same_shape(a, b), "img_sub: needs same shape");
@@ -539,6 +545,8 @@ void img_sub(Image* out, const Image* a, const Image* b) {
     for (u32 i = 0; i < out->size * out->fmt; i++) {
         out->data[i] = a->data[i] - b->data[i];
     }
+
+    mmu_flush_dcache();
 }
 void img_mul(Image* out, const Image* a, const Image* b) {
     assert(a->width == b->width && a->height == b->height,
@@ -550,4 +558,6 @@ void img_mul(Image* out, const Image* a, const Image* b) {
     for (u32 i = 0; i < out->size * out->fmt; i++) {
         out->data[i] = a->data[i] * b->data[i / d];
     }
+
+    mmu_flush_dcache();
 }

@@ -29,11 +29,12 @@ typedef struct {
     BayerFormat bfmt;
 
     float* data;
+    bool qpu_mem;
 } Image;
 
 void img_init(Image* img, u32 width, u32 height, u32 depth, PixelFormat fmt);
-void img_init_data(Image* img, u32 width, u32 height, u32 depth, PixelFormat fmt,
-        float* data);
+void img_init_data(Image* img, u32 width, u32 height, u32 depth,
+        PixelFormat fmt, float* data, bool qpu_mem);
 void img_init_bayer(Image* img, u32 width, u32 height, u32 depth,
         uint8_t* buf, BayerFormat bfmt);
 void img_init_frame(Image* img, CameraFrame* frame);
