@@ -128,5 +128,5 @@ void main() {
     elapsed();
 
     printk("write ppm...\n");
-    img_save_ppm(res, "OUT     PPM");
+    // img_save_ppm(res, "OUT     PPM");
 }

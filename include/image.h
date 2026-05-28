@@ -32,6 +32,11 @@ typedef struct {
     bool qpu_mem;
 } Image;
 
+Image* img_kmalloc();
+Image* img_kmalloc_n();
+u32 img_nbytes(const Image* img);
+void img_kernel_init();
+
 void img_init(Image* img, u32 width, u32 height, u32 depth, PixelFormat fmt);
 void img_init_data(Image* img, u32 width, u32 height, u32 depth,
         PixelFormat fmt, float* data, bool qpu_mem);
@@ -64,5 +69,7 @@ void img_copy(Image* out, const Image* in);
 void img_add(Image* out, const Image* a, const Image* b);
 void img_sub(Image* out, const Image* a, const Image* b);
 void img_mul(Image* out, const Image* a, const Image* b);
+
+void img_mul_scalar_clamp(Image* img, float scalar, float mn, float mx);
 
 #endif

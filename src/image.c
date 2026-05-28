@@ -5,6 +5,12 @@
 #include "fat.h"
 #include "mmu.h"
 
+#include "kernel.h"
+#include "fast_img_copy.h"
+#include "fast_img_add.h"
+#include "fast_img_sub.h"
+#include "fast_img_mul_scalar_clamp.h"
+
 #include <stddef.h>
 
 #define SAFETY_CHECK 0
@@ -22,6 +28,40 @@ static inline float luma(float r, float g, float b) {
     return r * LUMA_R + g * LUMA_G + b * LUMA_B;
 }
 
+// QPU stuff
+#define NUM_QPUS 12
+#define SIMD_WIDTH 16
+
+static Kernel fast_copy_k, fast_add_k, fast_sub_k, fast_mul_scalar_clamp_k;
+static bool k_init;
+
+void img_kernel_init() {
+    if (k_init) return;
+
+    kernel_init(&fast_copy_k, NUM_QPUS, 5,
+            fast_img_copy, sizeof(fast_img_copy));
+    kernel_init(&fast_add_k, NUM_QPUS, 6,
+            fast_img_add, sizeof(fast_img_add));
+    kernel_init(&fast_sub_k, NUM_QPUS, 6,
+            fast_img_sub, sizeof(fast_img_sub));
+    kernel_init(&fast_mul_scalar_clamp_k, NUM_QPUS, 7,
+            fast_img_mul_scalar_clamp, sizeof(fast_img_mul_scalar_clamp));
+    k_init = true;
+}
+
+Image* img_kmalloc() {
+    return img_kmalloc_n(1);
+}
+Image* img_kmalloc_n(u32 n) {
+    u32 sz = n * sizeof(Image);
+    Image* res = (Image*) kmalloc(sz);
+    memset(res, 0, sz);
+    return res;
+}
+u32 img_nbytes(const Image* img) {
+    return img->size * img->fmt * sizeof(float);
+}
+
 void img_init(Image* img, u32 width, u32 height, u32 depth, PixelFormat fmt) {
     img->width = width;
     img->height = height;
@@ -33,6 +73,8 @@ void img_init(Image* img, u32 width, u32 height, u32 depth, PixelFormat fmt) {
     if (!img->data) {
         img->data = kmalloc(img->size * img->fmt * sizeof(float));
         img->qpu_mem = false;
+    } else {
+        img->qpu_mem = true;
     }
 }
 void img_init_data(Image* img, u32 width, u32 height, u32 depth, PixelFormat fmt,
@@ -500,8 +542,25 @@ void img_set_data(Image* img, u32 y, u32 x, u32 c, float val) {
 }
 void img_copy(Image* out, const Image* in) {
     img_like(out, in);
-    for (u32 i = 0; i < in->size * in->fmt; i++) {
-        out->data[i] = in->data[i];
+
+    if (in->qpu_mem && out->qpu_mem) {
+        kernel_reset_unifs(&fast_copy_k);
+        for (int q = 0; q < NUM_QPUS; q++) {
+            kernel_load_unif(&fast_copy_k, q, NUM_QPUS * SIMD_WIDTH);
+            kernel_load_unif(&fast_copy_k, q, out->size * out->fmt);
+            kernel_load_unif(&fast_copy_k, q, q);
+
+            kernel_load_unif(&fast_copy_k, q, TO_BUS(in->data + q * SIMD_WIDTH));
+            kernel_load_unif(&fast_copy_k, q, TO_BUS(out->data + q * SIMD_WIDTH));
+        }
+
+        kernel_execute(&fast_copy_k);
+
+        mmu_flush_dcache();
+    } else {
+        for (u32 i = 0; i < in->size * in->fmt; i++) {
+            out->data[i] = in->data[i];
+        }
     }
 }
 
@@ -530,21 +589,44 @@ static inline bool same_shape(const Image* a, const Image* b) {
 }
 void img_add(Image* out, const Image* a, const Image* b) {
     assert(same_shape(a, b), "img_add: needs same shape");
+    assert(a->qpu_mem && b->qpu_mem, "img_add: needs both imgs on QPU");
+    assert(k_init, "img_add: kernels must be initialized");
 
     img_like(out, a);
-    for (u32 i = 0; i < out->size * out->fmt; i++) {
-        out->data[i] = a->data[i] + b->data[i];
+
+    kernel_reset_unifs(&fast_add_k);
+    for (int q = 0; q < NUM_QPUS; q++) {
+        kernel_load_unif(&fast_add_k, q, NUM_QPUS * SIMD_WIDTH);
+        kernel_load_unif(&fast_add_k, q, out->size * out->fmt);
+        kernel_load_unif(&fast_add_k, q, q);
+
+        kernel_load_unif(&fast_add_k, q, TO_BUS(a->data + q * SIMD_WIDTH));
+        kernel_load_unif(&fast_add_k, q, TO_BUS(b->data + q * SIMD_WIDTH));
+        kernel_load_unif(&fast_add_k, q, TO_BUS(out->data + q * SIMD_WIDTH));
     }
+
+    kernel_execute(&fast_add_k);
 
     mmu_flush_dcache();
 }
 void img_sub(Image* out, const Image* a, const Image* b) {
     assert(same_shape(a, b), "img_sub: needs same shape");
+    assert(a->qpu_mem && b->qpu_mem, "img_sub: needs both imgs on QPU");
 
     img_like(out, a);
-    for (u32 i = 0; i < out->size * out->fmt; i++) {
-        out->data[i] = a->data[i] - b->data[i];
+
+    kernel_reset_unifs(&fast_sub_k);
+    for (int q = 0; q < NUM_QPUS; q++) {
+        kernel_load_unif(&fast_sub_k, q, NUM_QPUS * SIMD_WIDTH);
+        kernel_load_unif(&fast_sub_k, q, out->size * out->fmt);
+        kernel_load_unif(&fast_sub_k, q, q);
+
+        kernel_load_unif(&fast_sub_k, q, TO_BUS(a->data + q * SIMD_WIDTH));
+        kernel_load_unif(&fast_sub_k, q, TO_BUS(b->data + q * SIMD_WIDTH));
+        kernel_load_unif(&fast_sub_k, q, TO_BUS(out->data + q * SIMD_WIDTH));
     }
+
+    kernel_execute(&fast_sub_k);
 
     mmu_flush_dcache();
 }
@@ -557,6 +639,33 @@ void img_mul(Image* out, const Image* a, const Image* b) {
     u32 d = (b->fmt == PIXEL_RGB ? 1 : 3); // alow for broadcasting
     for (u32 i = 0; i < out->size * out->fmt; i++) {
         out->data[i] = a->data[i] * b->data[i / d];
+    }
+
+    mmu_flush_dcache();
+}
+
+void img_mul_scalar_clamp(Image* img, float scalar, float mn, float mx) {
+    if (img->qpu_mem) {
+        kernel_reset_unifs(&fast_mul_scalar_clamp_k);
+        for (int q = 0; q < NUM_QPUS; q++) {
+            kernel_load_unif(&fast_mul_scalar_clamp_k, q, NUM_QPUS * SIMD_WIDTH);
+            kernel_load_unif(&fast_mul_scalar_clamp_k, q, img->size * img->fmt);
+            kernel_load_unif(&fast_mul_scalar_clamp_k, q, q);
+
+            kernel_load_unif(&fast_mul_scalar_clamp_k, q, TO_BUS(img->data + q * SIMD_WIDTH));
+            kernel_load_unif(&fast_mul_scalar_clamp_k, q, scalar);
+            kernel_load_unif(&fast_mul_scalar_clamp_k, q, mn);
+            kernel_load_unif(&fast_mul_scalar_clamp_k, q, mx);
+        }
+
+        kernel_execute(&fast_mul_scalar_clamp_k);
+    } else {
+        for (u32 i = 0; i < img->size * img->fmt; i++) {
+            float x = img->data[i] * scalar;
+            if (x > mx) x = mx;
+            if (x < mn) x = mn;
+            img->data[i] = x;
+        }
     }
 
     mmu_flush_dcache();
