@@ -6,9 +6,11 @@
 #include "mmu.h"
 
 #include "kernel.h"
+#include "fast_img_grayscale.h"
 #include "fast_img_copy.h"
 #include "fast_img_add.h"
 #include "fast_img_sub.h"
+#include "fast_img_mul_add.h"
 #include "fast_img_mul_scalar_clamp.h"
 
 #include <stddef.h>
@@ -32,18 +34,24 @@ static inline float luma(float r, float g, float b) {
 #define NUM_QPUS 12
 #define SIMD_WIDTH 16
 
-static Kernel fast_copy_k, fast_add_k, fast_sub_k, fast_mul_scalar_clamp_k;
+static Kernel fast_copy_k, fast_add_k, fast_sub_k,
+              fast_mul_add_k, fast_mul_scalar_clamp_k,
+              fast_grayscale_k;
 static bool k_init;
 
 void img_kernel_init() {
     if (k_init) return;
 
+    kernel_init(&fast_grayscale_k, NUM_QPUS, 5,
+            fast_img_grayscale, sizeof(fast_img_grayscale));
     kernel_init(&fast_copy_k, NUM_QPUS, 5,
             fast_img_copy, sizeof(fast_img_copy));
     kernel_init(&fast_add_k, NUM_QPUS, 6,
             fast_img_add, sizeof(fast_img_add));
     kernel_init(&fast_sub_k, NUM_QPUS, 6,
             fast_img_sub, sizeof(fast_img_sub));
+    kernel_init(&fast_mul_add_k, NUM_QPUS, 6,
+            fast_img_mul_add, sizeof(fast_img_mul_add));
     kernel_init(&fast_mul_scalar_clamp_k, NUM_QPUS, 7,
             fast_img_mul_scalar_clamp, sizeof(fast_img_mul_scalar_clamp));
     k_init = true;
@@ -577,9 +585,28 @@ void img_to_grayscale(Image* out, const Image* in) {
     assert(in->fmt == PIXEL_RGB, "to grayscale: needs RGB");
 
     img_gray_like(out, in);
+
+    // /*
+    kernel_reset_unifs(&fast_grayscale_k);
+    for (int q = 0; q < NUM_QPUS; q++) {
+        kernel_load_unif(&fast_grayscale_k, q, NUM_QPUS * SIMD_WIDTH);
+        kernel_load_unif(&fast_grayscale_k, q, out->size * out->fmt);
+        kernel_load_unif(&fast_grayscale_k, q, q);
+
+        kernel_load_unif(&fast_grayscale_k, q, TO_BUS(in->data));
+        kernel_load_unif(&fast_grayscale_k, q, TO_BUS(out->data + q * SIMD_WIDTH));
+    }
+
+    kernel_execute(&fast_grayscale_k);
+
+    mmu_flush_dcache();
+    // */
+
+    /*
     for (u32 i = 0; i < out->size; i++) {
         out->data[i] = luma(in->data[i * 3], in->data[i * 3 + 1], in->data[i * 3 + 2]);
     }
+    */
 }
 
 static inline bool same_shape(const Image* a, const Image* b) {
@@ -643,7 +670,29 @@ void img_mul(Image* out, const Image* a, const Image* b) {
 
     mmu_flush_dcache();
 }
+void img_mul_add(Image* out, const Image* a, const Image* b) {
+    assert(a->width == b->width && a->height == b->height,
+            "img_mul_add: needs same width/height");
+    assert(a->fmt == PIXEL_RGB && b->fmt == PIXEL_GRAY,
+            "img_mul_add: needs a to be RGB and b to be GRAY");
+    assert(a->qpu_mem && b->qpu_mem, "img_mul_add: needs both imgs on QPU");
+    assert(out->data, "img_mul_add: needs out data allocated");
 
+    kernel_reset_unifs(&fast_mul_add_k);
+    for (int q = 0; q < NUM_QPUS; q++) {
+        kernel_load_unif(&fast_mul_add_k, q, NUM_QPUS * SIMD_WIDTH);
+        kernel_load_unif(&fast_mul_add_k, q, out->size * out->fmt);
+        kernel_load_unif(&fast_mul_add_k, q, q);
+
+        kernel_load_unif(&fast_mul_add_k, q, TO_BUS(a->data + q * SIMD_WIDTH));
+        kernel_load_unif(&fast_mul_add_k, q, TO_BUS(b->data));
+        kernel_load_unif(&fast_mul_add_k, q, TO_BUS(out->data + q * SIMD_WIDTH));
+    }
+
+    kernel_execute(&fast_mul_add_k);
+
+    mmu_flush_dcache();
+}
 void img_mul_scalar_clamp(Image* img, float scalar, float mn, float mx) {
     if (img->qpu_mem) {
         kernel_reset_unifs(&fast_mul_scalar_clamp_k);

@@ -69,6 +69,7 @@ void img_copy(Image* out, const Image* in);
 void img_add(Image* out, const Image* a, const Image* b);
 void img_sub(Image* out, const Image* a, const Image* b);
 void img_mul(Image* out, const Image* a, const Image* b);
+void img_mul_add(Image* out, const Image* a, const Image* b);
 
 void img_mul_scalar_clamp(Image* img, float scalar, float mn, float mx);
 

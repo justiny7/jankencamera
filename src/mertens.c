@@ -7,6 +7,8 @@
 
 #include "kernel.h"
 #include "gaussian_conv.h"
+#include "sat_expos_grayscale.h"
+#include "laplacian_conv.h"
 
 #define VERBOSE 1
 
@@ -24,7 +26,7 @@ static const float gaussian_kernel[5] = {
 static const u32 arena_size = 100 * 1024 * 1024;
 static const u32 arena_align = 16 * sizeof(float);
 static Arena data_arena, temp_arena;
-static Kernel gconv_k;
+static Kernel gconv_k, sat_expos_grayscale_k, lconv_k;
 static bool k_init;
 
 static void convolve_gaussian(Image* out, const Image* in, float mul) {
@@ -34,7 +36,7 @@ static void convolve_gaussian(Image* out, const Image* in, float mul) {
     u32 h = in->height;
     u32 channels = in->fmt;
 
-    u32 offset = w * channels * 2;
+    u32 offset = w * channels * 2; // 2-pixel margin to handle borders
 
     img_like(out, in);
 
@@ -60,8 +62,8 @@ static void convolve_gaussian(Image* out, const Image* in, float mul) {
 
     kernel_execute(&gconv_k);
 
-    const float ys[4] = { 0, 1, h - 2, h - 1 };
-    const float xs[4] = { 0, 1, w - 2, w - 1 };
+    const u32 ys[4] = { 0, 1, h - 2, h - 1 };
+    const u32 xs[4] = { 0, 1, w - 2, w - 1 };
 
     for (u32 yi = 0; yi < 4; yi++) {
         u32 y = ys[yi];
@@ -200,63 +202,121 @@ static void upsample(Image* out, const Image* in, u32 width, u32 height, Arena* 
     arena_dealloc_to(&temp_arena, temp_sz);
     mmu_flush_dcache();
 }
-
 static void compute_weight_map(Image* out, const Image* in) {
     assert(in->fmt == PIXEL_RGB, "compute weight maps: needs RGB");
 
-    out->data = arena_alloc_align(&data_arena, img_nbytes(in), arena_align);
+    out->data = arena_alloc_align(&data_arena, in->size * sizeof(float), arena_align);
     img_gray_like(out, in);
 
     // for contrast
     u32 temp_sz = temp_arena.size;
     Image temp = (Image) {
-        .data = arena_alloc_align(&temp_arena, img_nbytes(in), arena_align)
+        .data = arena_alloc_align(&temp_arena, img_nbytes(out), arena_align)
     };
-    img_to_grayscale(&temp, in);
+    img_gray_like(&temp, in);
 
-    // for exposedness
-    const float sigma = 0.2f;
-    const float exp_mul = -1.0f / (2.0f * sigma * sigma);
+    ////// calculate saturation, exposedness, and convert img to grayscale
+    kernel_reset_unifs(&sat_expos_grayscale_k);
+    for (int q = 0; q < NUM_QPUS; q++) {
+        kernel_load_unif(&sat_expos_grayscale_k, q, NUM_QPUS * SIMD_WIDTH);
+        kernel_load_unif(&sat_expos_grayscale_k, q, out->size);
+        kernel_load_unif(&sat_expos_grayscale_k, q, q);
 
+        kernel_load_unif(&sat_expos_grayscale_k, q, TO_BUS(in->data));
+        kernel_load_unif(&sat_expos_grayscale_k, q, TO_BUS(temp.data + q * SIMD_WIDTH));
+        kernel_load_unif(&sat_expos_grayscale_k, q, TO_BUS(out->data + q * SIMD_WIDTH));
+    }
+
+    kernel_execute(&sat_expos_grayscale_k);
+
+    mmu_flush_dcache();
+
+    // save border pixels
     u32 w = in->width;
     u32 h = in->height;
-    const float* data = in->data;
+    float* row_border[2] = {
+        kmalloc(w * sizeof(float)),
+        kmalloc(w * sizeof(float)),
+    };
+    float* col_border[2] = {
+        kmalloc(h * sizeof(float)),
+        kmalloc(h * sizeof(float)),
+    };
+
+    const u32 ys[2] = { 0, h - 1 };
+    const u32 xs[2] = { 0, w - 1 };
     for (u32 y = 0; y < h; y++) {
-        for (u32 x = 0; x < w; x++) {
-            float S = 1.f, C = 1.f, E = 1.f;
-            u32 i = y * w + x;
-
-            {   // saturation
-                float avg = (data[i * 3] + data[i * 3 + 1] + data[i * 3 + 2]) / 3.f;
-                float dr = data[i * 3] - avg;
-                float dg = data[i * 3 + 1] - avg;
-                float db = data[i * 3 + 2] - avg;
-                S = sqrtf((dr * dr + dg * dg + db * db) / 3.f);
-            }
-
-            {   //  exposedness
-                for (u32 c = 0; c < 3; c++) {
-                    float val = data[i * 3 + c] - 0.5f;
-                    E *= expf(val * val * exp_mul);
-                }
-            }
-
-            {   // contrast (Laplacian filter)
-                u32 xl = (x == 0 ? 1 : x - 1);
-                u32 xr = (x == w - 1 ? w - 2 : x + 1);
-                u32 yl = (y == 0 ? 1 : y - 1);
-                u32 yr = (y == h - 1 ? h - 2 : y + 1);
-                C = img_get_data(&temp, y, xl, 0) +
-                    img_get_data(&temp, y, xr, 0) +
-                    img_get_data(&temp, yl, x, 0) +
-                    img_get_data(&temp, yr, x, 0) -
-                    img_get_data(&temp, y, x, 0) * 4.f;
-
-                if (C < 0) C = -C;
-            }
-
-            out->data[i] = S * C * E;
+        for (u32 xi = 0; xi < 2; xi++) {
+            u32 x = xs[xi];
+            col_border[xi][y] = out->data[y * w + x];
         }
+    }
+    for (u32 yi = 0; yi < 2; yi++) {
+        u32 y = ys[yi];
+        for (u32 x = 1; x < w - 1; x++) {
+            row_border[yi][x] = out->data[y * w + x];
+        }
+    }
+
+    ////// laplacian conv for contrast
+    kernel_reset_unifs(&lconv_k);
+    for (int q = 0; q < NUM_QPUS; q++) {
+        kernel_load_unif(&lconv_k, q, NUM_QPUS * SIMD_WIDTH);
+        kernel_load_unif(&lconv_k, q, w * (h - 2));
+        kernel_load_unif(&lconv_k, q, q);
+
+        kernel_load_unif(&lconv_k, q, 1);
+        kernel_load_unif(&lconv_k, q, w);
+
+        // 1-pixel margin to handle borders
+        kernel_load_unif(&lconv_k, q, TO_BUS(temp.data + w + q * SIMD_WIDTH));
+        kernel_load_unif(&lconv_k, q, TO_BUS(out->data + w + q * SIMD_WIDTH));
+    }
+
+    kernel_execute(&lconv_k);
+
+    for (u32 y = 0; y < h; y++) {
+        for (u32 xi = 0; xi < 2; xi++) {
+            u32 x = xs[xi];
+
+            u32 xl = (x == 0 ? 1 : x - 1);
+            u32 xr = (x == w - 1 ? w - 2 : x + 1);
+            u32 yl = (y == 0 ? 1 : y - 1);
+            u32 yr = (y == h - 1 ? h - 2 : y + 1);
+            float C = img_get_data(&temp, y, xl, 0) +
+                img_get_data(&temp, y, xr, 0) +
+                img_get_data(&temp, yl, x, 0) +
+                img_get_data(&temp, yr, x, 0) -
+                img_get_data(&temp, y, x, 0) * 4.f;
+
+            if (C < 0) C = -C;
+
+            out->data[y * w + x] = col_border[xi][y] * C;
+        }
+    }
+    for (u32 yi = 0; yi < 2; yi++) {
+        u32 y = ys[yi];
+
+        for (u32 x = 1; x < w - 1; x++) {
+            u32 xl = (x == 0 ? 1 : x - 1);
+            u32 xr = (x == w - 1 ? w - 2 : x + 1);
+            u32 yl = (y == 0 ? 1 : y - 1);
+            u32 yr = (y == h - 1 ? h - 2 : y + 1);
+            float C = img_get_data(&temp, y, xl, 0) +
+                img_get_data(&temp, y, xr, 0) +
+                img_get_data(&temp, yl, x, 0) +
+                img_get_data(&temp, yr, x, 0) -
+                img_get_data(&temp, y, x, 0) * 4.f;
+
+            if (C < 0) C = -C;
+
+            out->data[y * w + x] = row_border[yi][x] * C;
+        }
+    }
+
+    for (u32 i = 0; i < 2; i++) {
+        kfree(row_border[i]);
+        kfree(col_border[i]);
     }
 
     arena_dealloc_to(&temp_arena, temp_sz);
@@ -323,14 +383,13 @@ static void blend_pyramids(MertensExposure* m, Image** out,
         Image** laplacians, Image** weights) {
     Image* pyr = img_kmalloc_n(m->num_lvls);
     for (u32 i = 0; i < m->num_lvls; i++) {
-        pyr[i].data = arena_alloc_align(&data_arena, img_nbytes(&laplacians[0][i]), arena_align);
-        img_mul(&pyr[i], &laplacians[0][i], &weights[0][i]);
+        u32 sz = img_nbytes(&laplacians[0][i]);
+        pyr[i].data = arena_alloc_align(&data_arena, sz, arena_align);
+        memset(pyr[i].data, 0, sz);
 
-        u32 sz = pyr[i].size * pyr[i].fmt;
-        for (u32 j = 1; j < m->num_imgs; j++) {
-            for (u32 k = 0; k < sz; k++) { // laplacian is RGB, weight is gray
-                pyr[i].data[k] += laplacians[j][i].data[k] * weights[j][i].data[k / 3];
-            }
+        img_like(&pyr[i], &laplacians[0][i]);
+        for (u32 j = 0; j < m->num_imgs; j++) {
+            img_mul_add(&pyr[i], &laplacians[j][i], &weights[j][i]);
         }
     }
 
@@ -370,7 +429,12 @@ void mertens_init(MertensExposure* m, Image* imgs, u32 num_imgs) {
 
         arena_init_qpu(&data_arena, arena_size);
         arena_init_qpu(&temp_arena, arena_size);
-        kernel_init(&gconv_k, NUM_QPUS, 7, gaussian_conv, sizeof(gaussian_conv));
+        kernel_init(&gconv_k, NUM_QPUS,
+                7, gaussian_conv, sizeof(gaussian_conv));
+        kernel_init(&sat_expos_grayscale_k, NUM_QPUS,
+                7, sat_expos_grayscale, sizeof(sat_expos_grayscale));
+        kernel_init(&lconv_k, NUM_QPUS,
+                7, laplacian_conv, sizeof(laplacian_conv));
 
         k_init = true;
     }
