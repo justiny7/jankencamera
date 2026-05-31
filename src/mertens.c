@@ -23,6 +23,7 @@ static const float gaussian_kernel[5] = {
 #define NUM_QPUS 12
 #define SIMD_WIDTH 16
 
+// use GPU arenas even for faster alloc/dealloc
 static const u32 arena_size = 100 * 1024 * 1024;
 static const u32 arena_align = 16 * sizeof(float);
 static Arena data_arena, temp_arena;
@@ -448,21 +449,6 @@ void mertens_init(MertensExposure* m, Image* imgs, u32 num_imgs) {
     m->imgs = imgs;
     m->pmax = (1 << m->depth) - 1;
 
-    for (u32 i = 0; i < num_imgs; i++) {
-        Image* img = &m->imgs[i];
-        if (img->qpu_mem) continue;
-
-        printk("mertens init: realloc img %d to GPU mem\n", i);
-
-        u32 sz = img_nbytes(img);
-        float* new_data = arena_alloc_align(&data_arena, sz, arena_align);
-        memcpy(new_data, img->data, sz);
-        kfree(img->data);
-
-        img->data = new_data;
-        img->qpu_mem = true;
-    }
-
     mmu_flush_dcache();
 }
 
@@ -512,7 +498,6 @@ Image* mertens_fuse(MertensExposure* m) {
     now("blending...\n");
     blend_pyramids(m, &blended, laplacians, weights);
     elapsed();
-
 
     Image* out = img_kmalloc();
     now("collapsing...\n");

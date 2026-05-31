@@ -48,11 +48,11 @@ void img_free(Image* img);
 void img_black_white_norm(Image* img, u32 white_lvl, u32 black_lvl);
 void img_gray_world_wb(Image* img);
 void img_debayer(Image* img);
-void img_debayer_pipeline(Image* img, u32 white_lvl, u32 black_lvl);
-void img_debayer_pipeline_to_fb(Image* img, u32* fb,
+void img_debayer_fast(Image* img, u32* fb, bool store_img);
+void img_debayer_pipeline_frame_to_fb(CameraFrame* frame, u32* fb,
         u32 white_lvl, u32 black_lvl);
-void img_debayer_pipeline_to_fb_frame(CameraFrame* frame, u32* fb,
-        u32 white_lvl, u32 black_lvl);
+
+void img_bw_norm_gray_world_wb(Image* img, u32 white_lvl, u32 black_lvl);
 
 void img_save_ppm(Image* img, const char* filename);
 void img_write_framebuffer(Image* img, u32* fb);

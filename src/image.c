@@ -12,6 +12,10 @@
 #include "fast_img_sub.h"
 #include "fast_img_mul_add.h"
 #include "fast_img_mul_scalar_clamp.h"
+#include "fast_fb_to_img.h"
+#include "bw_norm_gw_accum.h"
+#include "gw_wb.h"
+#include "debayer_rggb.h"
 
 #include <stddef.h>
 
@@ -34,13 +38,24 @@ static inline float luma(float r, float g, float b) {
 #define NUM_QPUS 12
 #define SIMD_WIDTH 16
 
+static const u32 arena_size = 30 * 1024 * 1024;
+static const u32 arena_align = SIMD_WIDTH * sizeof(float);
 static Kernel fast_copy_k, fast_add_k, fast_sub_k,
               fast_mul_add_k, fast_mul_scalar_clamp_k,
-              fast_grayscale_k;
+              fast_grayscale_k, fast_fb_to_img_k;
+static Kernel bw_norm_gw_accum_k, gw_wb_k, debayer_rggb_k;
+static Arena data_arena;
 static bool k_init;
+
+// TODO:
+// kernel for this and debayer
+// try VPM for convolution kernels?
+// reason why we don't have 2D abstraction for convolution: need 16-multiple width
 
 void img_kernel_init() {
     if (k_init) return;
+
+    arena_init_qpu(&data_arena, arena_size);
 
     kernel_init(&fast_grayscale_k, NUM_QPUS, 5,
             fast_img_grayscale, sizeof(fast_img_grayscale));
@@ -54,6 +69,16 @@ void img_kernel_init() {
             fast_img_mul_add, sizeof(fast_img_mul_add));
     kernel_init(&fast_mul_scalar_clamp_k, NUM_QPUS, 7,
             fast_img_mul_scalar_clamp, sizeof(fast_img_mul_scalar_clamp));
+    kernel_init(&fast_fb_to_img_k, NUM_QPUS, 7,
+            fast_fb_to_img, sizeof(fast_fb_to_img));
+
+    kernel_init(&bw_norm_gw_accum_k, NUM_QPUS, 10,
+            bw_norm_gw_accum, sizeof(bw_norm_gw_accum));
+    kernel_init(&gw_wb_k, NUM_QPUS, 8,
+            gw_wb, sizeof(gw_wb));
+    kernel_init(&debayer_rggb_k, NUM_QPUS, 7,
+            debayer_rggb, sizeof(debayer_rggb));
+
     k_init = true;
 }
 
@@ -70,6 +95,13 @@ u32 img_nbytes(const Image* img) {
     return img->size * img->fmt * sizeof(float);
 }
 
+// Guarantees:
+// Image height is even
+// Image width is divisble by 16
+static bool check_img(Image* img) {
+    return ((img->height & 1) == 0) &&
+        ((img->width & 0xF) == 0);
+}
 void img_init(Image* img, u32 width, u32 height, u32 depth, PixelFormat fmt) {
     img->width = width;
     img->height = height;
@@ -84,6 +116,10 @@ void img_init(Image* img, u32 width, u32 height, u32 depth, PixelFormat fmt) {
     } else {
         img->qpu_mem = true;
     }
+
+#if SAFETY_CHECK
+    assert(check_img(img), "img_init: didn't pass image check");
+#endif
 }
 void img_init_data(Image* img, u32 width, u32 height, u32 depth, PixelFormat fmt,
         float* data, bool qpu_mem) {
@@ -95,6 +131,10 @@ void img_init_data(Image* img, u32 width, u32 height, u32 depth, PixelFormat fmt
     img->is_bayer = false;
     img->data = data;
     img->qpu_mem = qpu_mem;
+
+#if SAFETY_CHECK
+    assert(check_img(img), "img_init: didn't pass image check");
+#endif
 }
 void img_init_bayer(Image* img, u32 width, u32 height, u32 depth,
         uint8_t* buf, BayerFormat bfmt) {
@@ -150,6 +190,7 @@ void img_black_white_norm(Image* img, u32 white_lvl, u32 black_lvl) {
         img->data[i] = clampf(img->data[i] - black_lvl, 0.f, diff) * mul;
     }
 }
+
 void img_gray_world_wb(Image* img) {
     assert(img->is_bayer, "white balance: image must be bayer");
     assert(img->fmt == PIXEL_GRAY, "white balance: image must be gray");
@@ -160,7 +201,8 @@ void img_gray_world_wb(Image* img) {
         avg[c] += img->data[i];
     }
 
-    for (u32 i = 0; i < 4; i++) avg[i] /= 4.f;
+    float mul = 4.f / img->size;
+    for (u32 i = 0; i < 4; i++) avg[i] *= mul;
 
     float g_avg = (avg[1] + avg[2]) / 2;
     float pmax = (float) pixel_max(img->depth);
@@ -170,6 +212,120 @@ void img_gray_world_wb(Image* img) {
         img->data[i] = clampf(gain * img->data[i], 0.f, pmax);
     }
 }
+
+void img_bw_norm_gray_world_wb(Image* img, u32 white_lvl, u32 black_lvl) {
+    assert(img->is_bayer, "bw norm & wb: image must be bayer");
+    assert(img->fmt == PIXEL_GRAY, "bw norm & wb: image must be gray");
+    assert(k_init, "img_bw_norm_gray_world_wb: kernels must be initialized");
+
+    u32 arena_sz = data_arena.size;
+    u32 w = img->width;
+    u32 h = img->height;
+
+    ////// black/white norm + accumulate sums for white balance
+    float* accum[NUM_QPUS];
+    float diff = white_lvl - black_lvl;
+    float pmax = pixel_max(img->depth);
+    float mul = pmax / diff;
+
+    kernel_reset_unifs(&bw_norm_gw_accum_k);
+    for (u32 q = 0; q < NUM_QPUS; q++) {
+        accum[q] = arena_alloc_align(&data_arena,
+                SIMD_WIDTH * sizeof(float), arena_align);
+
+        kernel_load_unif(&bw_norm_gw_accum_k, q, SIMD_WIDTH);
+        kernel_load_unif(&bw_norm_gw_accum_k, q, w);
+        kernel_load_unif(&bw_norm_gw_accum_k, q, NUM_QPUS);
+        kernel_load_unif(&bw_norm_gw_accum_k, q, h);
+        kernel_load_unif(&bw_norm_gw_accum_k, q, q);
+
+        kernel_load_unif(&bw_norm_gw_accum_k, q, TO_BUS(img->data + q * w));
+        kernel_load_unif(&bw_norm_gw_accum_k, q, TO_BUS(accum[q]));
+
+        kernel_load_unif(&bw_norm_gw_accum_k, q, ((float) black_lvl));
+        kernel_load_unif(&bw_norm_gw_accum_k, q, diff);
+        kernel_load_unif(&bw_norm_gw_accum_k, q, mul);
+    }
+
+    kernel_execute(&bw_norm_gw_accum_k);
+
+    float avg[4] = { 0.f, 0.f, 0.f, 0.f };
+    for (int i = 0; i < NUM_QPUS; i++) {
+        for (int j = 0; j < SIMD_WIDTH; j++) {
+            avg[get_bayer_channel(img, i * w + j)] += accum[i][j];
+        }
+    }
+
+    float avg_mul = 4.f / img->size;
+    for (int i = 0; i < 4; i++) avg[i] *= avg_mul;
+
+    float g_avg = (avg[1] + avg[2]) / 2;
+    float* gains[2];
+    for (int i = 0; i < 2; i++) {
+        gains[i] = arena_alloc_align(&data_arena,
+                SIMD_WIDTH * sizeof(float), arena_align);
+
+        for (int j = 0; j < SIMD_WIDTH; j++) {
+            gains[i][j] = g_avg / avg[get_bayer_channel(img, i * w + j)];
+        }
+    }
+
+    /////// multiply gains
+    kernel_reset_unifs(&gw_wb_k);
+    for (u32 q = 0; q < NUM_QPUS; q++) {
+        kernel_load_unif(&gw_wb_k, q, SIMD_WIDTH);
+        kernel_load_unif(&gw_wb_k, q, w);
+        kernel_load_unif(&gw_wb_k, q, NUM_QPUS);
+        kernel_load_unif(&gw_wb_k, q, h);
+        kernel_load_unif(&gw_wb_k, q, q);
+
+        kernel_load_unif(&gw_wb_k, q, TO_BUS(img->data + q * w));
+        kernel_load_unif(&gw_wb_k, q, TO_BUS(gains[q & 1]));
+
+        kernel_load_unif(&gw_wb_k, q, pmax);
+    }
+
+    kernel_execute(&gw_wb_k);
+
+    arena_dealloc_to(&data_arena, arena_sz);
+    mmu_flush_dcache();
+}
+
+static void debayer_linear_rgb(Image* img, u32 y, u32 x, float* r, float* g, float* b) {
+    u32 s = img->width;
+    u32 i = y * s + x;
+
+    int xl = (x == 0 ? 1 : -1);
+    int xr = (x == img->width - 1 ? -1 : 1);
+    int yl = (y == 0 ? s : -s);
+    int yr = (y == img->height - 1 ? -s : s);
+
+    float* d = &img->data[i];
+
+    u32 channel = get_bayer_channel(img, i);
+    switch (channel) {
+        case 0: // R
+            *r = d[0];
+            *g = (d[xl] + d[xr] + d[yl] + d[yr]) / 4.f;
+            *b = (d[xl + yl] + d[xl + yr] + d[xr + yl] + d[xr + yr]) / 4.f;
+            break;
+        case 1: // G1
+            *r = (d[xl] + d[xr]) / 2.f;
+            *g = d[0];
+            *b = (d[yl] + d[yr]) / 2.f;
+            break;
+        case 2: // G2
+            *r = (d[yl] + d[yr]) / 2.f;
+            *g = d[0];
+            *b = (d[xl] + d[xr]) / 2.f;
+            break;
+        case 3: // B
+            *r = (d[xl + yl] + d[xl + yr] + d[xr + yl] + d[xr + yr]) / 4.f;
+            *g = (d[xl] + d[xr] + d[yl] + d[yr]) / 4.f;
+            *b = d[0];
+            break;
+    }
+}
 void img_debayer(Image* img) {
     assert(img->is_bayer, "debayer: image must be bayer");
     assert(img->fmt == PIXEL_GRAY, "debayer: image must be gray");
@@ -177,44 +333,11 @@ void img_debayer(Image* img) {
     float* new_data = kmalloc(img->size * 3 * sizeof(float));
     for (u32 y = 0; y < img->height; y++) {
         for (u32 x = 0; x < img->width; x++) {
-            u32 s = img->width;
-            u32 i = y * s + x;
-
-            int xl = (x == 0 ? 1 : -1);
-            int xr = (x == img->width - 1 ? -1 : 1);
-            int yl = (y == 0 ? s : -s);
-            int yr = (y == img->height - 1 ? -s : s);
-
-            float r = 0, g = 0, b = 0;
-            float* d = &img->data[i];
-
-            u32 channel = get_bayer_channel(img, i);
-            switch (channel) {
-                case 0: // R
-                    r = d[0];
-                    g = (d[xl] + d[xr] + d[yl] + d[yr]) / 4.f;
-                    b = (d[xl + yl] + d[xl + yr] + d[xr + yl] + d[xr + yr]) / 4.f;
-                    break;
-                case 1: // G1
-                    r = (d[xl] + d[xr]) / 2.f;
-                    g = d[0];
-                    b = (d[yl] + d[yr]) / 2.f;
-                    break;
-                case 2: // G2
-                    r = (d[yl] + d[yr]) / 2.f;
-                    g = d[0];
-                    b = (d[xl] + d[xr]) / 2.f;
-                    break;
-                case 3: // B
-                    r = (d[xl + yl] + d[xl + yr] + d[xr + yl] + d[xr + yr]) / 4.f;
-                    g = (d[xl] + d[xr] + d[yl] + d[yr]) / 4.f;
-                    b = d[0];
-                    break;
-            }
-
-            new_data[i * 3] = r;
-            new_data[i * 3 + 1] = g;
-            new_data[i * 3 + 2] = b;
+            u32 i = y * img->width + x;
+            debayer_linear_rgb(img, y, x,
+                    &new_data[i * 3],
+                    &new_data[i * 3 + 1],
+                    &new_data[i * 3 + 2]);
         }
     }
 
@@ -223,148 +346,128 @@ void img_debayer(Image* img) {
     img->fmt = PIXEL_RGB;
     img->is_bayer = false;
 }
-void img_debayer_pipeline(Image* img, u32 white_lvl, u32 black_lvl) {
-    assert(img->is_bayer, "debayer pipeline: image must be bayer");
-    assert(img->fmt == PIXEL_GRAY, "debayer pipeline: image must be gray");
+void img_debayer_fast(Image* img, u32* fb, bool store_img) {
+    assert(img->is_bayer, "debayer_fast: image must be bayer");
+    assert(img->fmt == PIXEL_GRAY, "debayer_fast: image must be gray");
+    assert(img->bfmt == BAYER_RGGB, "debayer_fast: image must be RGGB");
 
-    float diff = white_lvl - black_lvl;
-    float avg[4] = { 0.f, 0.f, 0.f, 0.f };
-
+    u32 h = img->height;
+    u32 w = img->width;
     float pmax = (float) pixel_max(img->depth);
-    float mul = pmax / diff;
-    for (u32 i = 0; i < img->size; i++) {
-        u32 c = get_bayer_channel(img, i);
 
-        img->data[i] = clampf(img->data[i] - black_lvl, 0.f, diff) * mul;
-        avg[c] += img->data[i];
+    u32 arena_sz = data_arena.size;
+    if (!fb) {
+        fb = arena_alloc_align(&data_arena, img->size * sizeof(u32), arena_align);
     }
 
-    for (u32 i = 0; i < 4; i++) avg[i] /= 4.f;
+    // normalize
+    img_mul_scalar_clamp(img, 1.f / pmax, 0.f, 1.f);
 
-    float g_avg = (avg[1] + avg[2]) / 2;
-    float* new_data = kmalloc(img->size * 3 * sizeof(float));
-    for (u32 y = 0; y < img->height; y++) {
-        for (u32 x = 0; x < img->width; x++) {
-            u32 s = img->width;
-            u32 i = y * s + x;
+    // tradeoff: compresses to 8 bits
+    kernel_reset_unifs(&debayer_rggb_k);
 
-            u32 channel = get_bayer_channel(img, i);
-            float gain = g_avg / avg[channel];
-            img->data[i] = clampf(gain * img->data[i], 0.f, pmax);
+    for (u32 q = 0; q < NUM_QPUS; q++) {
+        kernel_load_unif(&debayer_rggb_k, q, SIMD_WIDTH);
+        kernel_load_unif(&debayer_rggb_k, q, w);
+        kernel_load_unif(&debayer_rggb_k, q, NUM_QPUS * 2);
+        kernel_load_unif(&debayer_rggb_k, q, h - 2); // h-2 rows
+        kernel_load_unif(&debayer_rggb_k, q, q);
 
-            int xl = (x == 0 ? 1 : -1);
-            int xr = (x == img->width - 1 ? -1 : 1);
-            int yl = (y == 0 ? s : -s);
-            int yr = (y == img->height - 1 ? -s : s);
-
-            float r = 0, g = 0, b = 0;
-            float* d = &img->data[i];
-
-            switch (channel) {
-                case 0: // R
-                    r = d[0];
-                    g = (d[xl] + d[xr] + d[yl] + d[yr]) / 4.f;
-                    b = (d[xl + yl] + d[xl + yr] + d[xr + yl] + d[xr + yr]) / 4.f;
-                    break;
-                case 1: // G1
-                    r = (d[xl] + d[xr]) / 2.f;
-                    g = d[0];
-                    b = (d[yl] + d[yr]) / 2.f;
-                    break;
-                case 2: // G2
-                    r = (d[yl] + d[yr]) / 2.f;
-                    g = d[0];
-                    b = (d[xl] + d[xr]) / 2.f;
-                    break;
-                case 3: // B
-                    r = (d[xl + yl] + d[xl + yr] + d[xr + yl] + d[xr + yr]) / 4.f;
-                    g = (d[xl] + d[xr] + d[yl] + d[yr]) / 4.f;
-                    b = d[0];
-                    break;
-            }
-
-            new_data[i * 3] = r;
-            new_data[i * 3 + 1] = g;
-            new_data[i * 3 + 2] = b;
-        }
+        // handles 2 rows at a time
+        kernel_load_unif(&debayer_rggb_k, q, TO_BUS(img->data + (1 + q * 2) * w));
+        kernel_load_unif(&debayer_rggb_k, q, TO_BUS(fb + (1 + q * 2) * w));
     }
 
-    kfree(img->data);
-    img->data = new_data;
-    img->fmt = PIXEL_RGB;
-    img->is_bayer = false;
-}
-void img_debayer_pipeline_to_fb(Image* img, u32* fb,
-        u32 white_lvl, u32 black_lvl) {
-    assert(img->is_bayer, "debayer pipeline to fb: image must be bayer");
-    assert(img->fmt == PIXEL_GRAY, "debayer pipeline to fb: image must be gray");
-    assert(img->depth == 8 || img->depth == 10,
-            "debayer pipeline to fb: only support 8/10 bit depth");
+    kernel_execute(&debayer_rggb_k);
 
-    float diff = white_lvl - black_lvl;
-    float avg[4] = { 0.f, 0.f, 0.f, 0.f };
+    // borders
+    const u32 ys[2] = { 0, h - 1};
+    const u32 xs[2] = { 0, w - 1};
 
-    float pmax = (float) pixel_max(img->depth);
-    float mul = pmax / diff;
-    for (u32 i = 0; i < img->size; i++) {
-        u32 c = get_bayer_channel(img, i);
+    for (u32 yi = 0; yi < 2; yi++) {
+        u32 y = ys[yi];
+        for (u32 x = 0; x < w; x++) {
+            u32 i = y * w + x;
+            float r, g, b;
+            debayer_linear_rgb(img, y, x,
+                    &r, &g, &b);
 
-        img->data[i] = clampf(img->data[i] - black_lvl, 0.f, diff) * mul;
-        avg[c] += img->data[i];
-    }
+            u32 ri = (u32) (r * 255);
+            u32 gi = (u32) (g * 255);
+            u32 bi = (u32) (b * 255);
 
-    for (u32 i = 0; i < 4; i++) avg[i] /= 4.f;
-
-    float g_avg = (avg[1] + avg[2]) / 2;
-    u32 shift = img->depth - 8;
-    for (u32 y = 0; y < img->height; y++) {
-        for (u32 x = 0; x < img->width; x++) {
-            u32 s = img->width;
-            u32 i = y * s + x;
-
-            u32 channel = get_bayer_channel(img, i);
-            float gain = g_avg / avg[channel];
-            img->data[i] = clampf(gain * img->data[i], 0.f, pmax);
-
-            int xl = (x == 0 ? 1 : -1);
-            int xr = (x == img->width - 1 ? -1 : 1);
-            int yl = (y == 0 ? s : -s);
-            int yr = (y == img->height - 1 ? -s : s);
-
-            float r = 0, g = 0, b = 0;
-            float* d = &img->data[i];
-
-            switch (channel) {
-                case 0: // R
-                    r = d[0];
-                    g = (d[xl] + d[xr] + d[yl] + d[yr]) / 4.f;
-                    b = (d[xl + yl] + d[xl + yr] + d[xr + yl] + d[xr + yr]) / 4.f;
-                    break;
-                case 1: // G1
-                    r = (d[xl] + d[xr]) / 2.f;
-                    g = d[0];
-                    b = (d[yl] + d[yr]) / 2.f;
-                    break;
-                case 2: // G2
-                    r = (d[yl] + d[yr]) / 2.f;
-                    g = d[0];
-                    b = (d[xl] + d[xr]) / 2.f;
-                    break;
-                case 3: // B
-                    r = (d[xl + yl] + d[xl + yr] + d[xr + yl] + d[xr + yr]) / 4.f;
-                    g = (d[xl] + d[xr] + d[yl] + d[yr]) / 4.f;
-                    b = d[0];
-                    break;
-            }
-
-            u32 ri = ((u32) r) >> shift;
-            u32 gi = ((u32) g) >> shift;
-            u32 bi = ((u32) b) >> shift;
             fb[i] = (ri << 16) | (gi << 8) | bi;
         }
     }
+    for (u32 y = 1; y < h - 1; y++) {
+        for (u32 xi = 0; xi < 2; xi++) {
+            u32 x = xs[xi];
+
+            u32 i = y * w + x;
+            float r, g, b;
+            debayer_linear_rgb(img, y, x,
+                    &r, &g, &b);
+
+            u32 ri = (u32) (r * 255);
+            u32 gi = (u32) (g * 255);
+            u32 bi = (u32) (b * 255);
+
+            fb[i] = (ri << 16) | (gi << 8) | bi;
+        }
+    }
+
+    if (store_img) {
+        float* new_data = kmalloc(img->size * 3 * sizeof(float));
+
+        // 8-bit to whatever depth
+        float conv = pmax / 255.f;
+
+        // 0: R = 16, G = 8,  B = 0,  R = 16, ...
+        // 1: G = 8,  B = 0,  R = 16, G = 8,  ...
+        // 2: B = 0,  R = 16, G = 8,  B = 0,  ...
+        // Since QPU_NUM = 12 is divisible by 3, every QPU has the same shifts
+        u32* shifts[3];
+        for (int i = 0; i < 3; i++) {
+            shifts[i] = arena_alloc_align(&data_arena,
+                    SIMD_WIDTH * sizeof(u32), arena_align);
+
+            for (int j = 0; j < SIMD_WIDTH; j++) {
+                shifts[i][j] = 16 - ((j + i) % 3) * 8;
+            }
+        }
+
+        kernel_reset_unifs(&fast_fb_to_img_k);
+        for (int q = 0; q < NUM_QPUS; q++) {
+            kernel_load_unif(&fast_fb_to_img_k, q, NUM_QPUS * SIMD_WIDTH);
+            kernel_load_unif(&fast_fb_to_img_k, q, img->size * 3);
+            kernel_load_unif(&fast_fb_to_img_k, q, q);
+
+            kernel_load_unif(&fast_fb_to_img_k, q, TO_BUS(fb));
+            kernel_load_unif(&fast_fb_to_img_k, q, TO_BUS(new_data + q * SIMD_WIDTH));
+            kernel_load_unif(&fast_fb_to_img_k, q, TO_BUS(shifts[q % 3]));
+            kernel_load_unif(&fast_fb_to_img_k, q, conv);
+        }
+
+        kernel_execute(&fast_fb_to_img_k);
+
+        mmu_flush_dcache();
+
+        kfree(img->data);
+        img->data = new_data;
+        img->fmt = PIXEL_RGB;
+        img->is_bayer = false;
+
+    } else {
+        // not gonna scale back bc if you're demosaicing, either you save the result
+        // or you're just writing to framebuffer - just free image in that case
+        img_free(img);
+    }
+
+    arena_dealloc_to(&data_arena, arena_sz);
+    mmu_flush_dcache();
 }
-void img_debayer_pipeline_to_fb_frame(CameraFrame* frame, u32* fb,
+
+void img_debayer_pipeline_frame_to_fb(CameraFrame* frame, u32* fb,
         u32 white_lvl, u32 black_lvl) {
     CameraConfig cfg = frame->cfg;
     assert(cfg.fmt == CAM_FMT_BAYER_10, "only support 10-bit depth");
@@ -385,7 +488,8 @@ void img_debayer_pipeline_to_fb_frame(CameraFrame* frame, u32* fb,
         avg[c] += img.data[i];
     }
 
-    for (u32 i = 0; i < 4; i++) avg[i] /= 4.f;
+    float avg_mul = 4.f / img.size;
+    for (u32 i = 0; i < 4; i++) avg[i] *= avg_mul;
 
     float g_avg = (avg[1] + avg[2]) / 2;
     u32 shift = img.depth - 8;
@@ -399,37 +503,13 @@ void img_debayer_pipeline_to_fb_frame(CameraFrame* frame, u32* fb,
             img.data[i] = clampf(gain * img.data[i], 0.f, pmax);
 
             if (y > 1 && x > 1) {
-                u32 j = i - 1 - s;
-                float r = 0, g = 0, b = 0;
-                float* d = &img.data[j];
-
-                switch (channel ^ 0x3) { // since we're doing up diagonal
-                    case 0: // R
-                        r = d[0];
-                        g = (d[-1] + d[1] + d[-s] + d[s]) / 4.f;
-                        b = (d[-1 + -s] + d[-1 + s] + d[1 + -s] + d[1 + s]) / 4.f;
-                        break;
-                    case 1: // G1
-                        r = (d[-1] + d[1]) / 2.f;
-                        g = d[0];
-                        b = (d[-s] + d[s]) / 2.f;
-                        break;
-                    case 2: // G2
-                        r = (d[-s] + d[s]) / 2.f;
-                        g = d[0];
-                        b = (d[-1] + d[1]) / 2.f;
-                        break;
-                    case 3: // B
-                        r = (d[-1 + -s] + d[-1 + s] + d[1 + -s] + d[1 + s]) / 4.f;
-                        g = (d[-1] + d[1] + d[-s] + d[s]) / 4.f;
-                        b = d[0];
-                        break;
-                }
+                float r, g, b;
+                debayer_linear_rgb(&img, y - 1, x - 1, &r, &g, &b);
 
                 u32 ri = ((u32) r) >> shift;
                 u32 gi = ((u32) g) >> shift;
                 u32 bi = ((u32) b) >> shift;
-                fb[j] = (ri << 16) | (gi << 8) | bi;
+                fb[i - 1 - s] = (ri << 16) | (gi << 8) | bi;
             }
         }
     }
@@ -549,27 +629,23 @@ void img_set_data(Image* img, u32 y, u32 x, u32 c, float val) {
     img->data[img_get_idx(img, y, x, c)] = val;
 }
 void img_copy(Image* out, const Image* in) {
+    assert(k_init, "img_copy: kernels must be initialized");
+
     img_like(out, in);
 
-    if (in->qpu_mem && out->qpu_mem) {
-        kernel_reset_unifs(&fast_copy_k);
-        for (int q = 0; q < NUM_QPUS; q++) {
-            kernel_load_unif(&fast_copy_k, q, NUM_QPUS * SIMD_WIDTH);
-            kernel_load_unif(&fast_copy_k, q, out->size * out->fmt);
-            kernel_load_unif(&fast_copy_k, q, q);
+    kernel_reset_unifs(&fast_copy_k);
+    for (int q = 0; q < NUM_QPUS; q++) {
+        kernel_load_unif(&fast_copy_k, q, NUM_QPUS * SIMD_WIDTH);
+        kernel_load_unif(&fast_copy_k, q, out->size * out->fmt);
+        kernel_load_unif(&fast_copy_k, q, q);
 
-            kernel_load_unif(&fast_copy_k, q, TO_BUS(in->data + q * SIMD_WIDTH));
-            kernel_load_unif(&fast_copy_k, q, TO_BUS(out->data + q * SIMD_WIDTH));
-        }
-
-        kernel_execute(&fast_copy_k);
-
-        mmu_flush_dcache();
-    } else {
-        for (u32 i = 0; i < in->size * in->fmt; i++) {
-            out->data[i] = in->data[i];
-        }
+        kernel_load_unif(&fast_copy_k, q, TO_BUS(in->data + q * SIMD_WIDTH));
+        kernel_load_unif(&fast_copy_k, q, TO_BUS(out->data + q * SIMD_WIDTH));
     }
+
+    kernel_execute(&fast_copy_k);
+
+    mmu_flush_dcache();
 }
 
 void img_like(Image* out, const Image* in) {
@@ -583,10 +659,10 @@ void img_rgb_like(Image* out, const Image* in) {
 }
 void img_to_grayscale(Image* out, const Image* in) {
     assert(in->fmt == PIXEL_RGB, "to grayscale: needs RGB");
+    assert(k_init, "img_to_grayscale: kernels must be initialized");
 
     img_gray_like(out, in);
 
-    // /*
     kernel_reset_unifs(&fast_grayscale_k);
     for (int q = 0; q < NUM_QPUS; q++) {
         kernel_load_unif(&fast_grayscale_k, q, NUM_QPUS * SIMD_WIDTH);
@@ -600,13 +676,6 @@ void img_to_grayscale(Image* out, const Image* in) {
     kernel_execute(&fast_grayscale_k);
 
     mmu_flush_dcache();
-    // */
-
-    /*
-    for (u32 i = 0; i < out->size; i++) {
-        out->data[i] = luma(in->data[i * 3], in->data[i * 3 + 1], in->data[i * 3 + 2]);
-    }
-    */
 }
 
 static inline bool same_shape(const Image* a, const Image* b) {
@@ -616,7 +685,6 @@ static inline bool same_shape(const Image* a, const Image* b) {
 }
 void img_add(Image* out, const Image* a, const Image* b) {
     assert(same_shape(a, b), "img_add: needs same shape");
-    assert(a->qpu_mem && b->qpu_mem, "img_add: needs both imgs on QPU");
     assert(k_init, "img_add: kernels must be initialized");
 
     img_like(out, a);
@@ -638,7 +706,7 @@ void img_add(Image* out, const Image* a, const Image* b) {
 }
 void img_sub(Image* out, const Image* a, const Image* b) {
     assert(same_shape(a, b), "img_sub: needs same shape");
-    assert(a->qpu_mem && b->qpu_mem, "img_sub: needs both imgs on QPU");
+    assert(k_init, "img_sub: kernels must be initialized");
 
     img_like(out, a);
 
@@ -660,6 +728,7 @@ void img_sub(Image* out, const Image* a, const Image* b) {
 void img_mul(Image* out, const Image* a, const Image* b) {
     assert(a->width == b->width && a->height == b->height,
             "img_mul: needs same width/height");
+    assert(k_init, "img_mul: kernels must be initialized");
 
     img_like(out, a);
 
@@ -675,8 +744,8 @@ void img_mul_add(Image* out, const Image* a, const Image* b) {
             "img_mul_add: needs same width/height");
     assert(a->fmt == PIXEL_RGB && b->fmt == PIXEL_GRAY,
             "img_mul_add: needs a to be RGB and b to be GRAY");
-    assert(a->qpu_mem && b->qpu_mem, "img_mul_add: needs both imgs on QPU");
     assert(out->data, "img_mul_add: needs out data allocated");
+    assert(k_init, "img_mul_add: kernels must be initialized");
 
     kernel_reset_unifs(&fast_mul_add_k);
     for (int q = 0; q < NUM_QPUS; q++) {
@@ -694,28 +763,22 @@ void img_mul_add(Image* out, const Image* a, const Image* b) {
     mmu_flush_dcache();
 }
 void img_mul_scalar_clamp(Image* img, float scalar, float mn, float mx) {
-    if (img->qpu_mem) {
-        kernel_reset_unifs(&fast_mul_scalar_clamp_k);
-        for (int q = 0; q < NUM_QPUS; q++) {
-            kernel_load_unif(&fast_mul_scalar_clamp_k, q, NUM_QPUS * SIMD_WIDTH);
-            kernel_load_unif(&fast_mul_scalar_clamp_k, q, img->size * img->fmt);
-            kernel_load_unif(&fast_mul_scalar_clamp_k, q, q);
+    assert(img->data, "img_mul_scalar_clamp: needs data allocated");
+    assert(k_init, "img_mul_scalar_clamp: kernels must be initialized");
 
-            kernel_load_unif(&fast_mul_scalar_clamp_k, q, TO_BUS(img->data + q * SIMD_WIDTH));
-            kernel_load_unif(&fast_mul_scalar_clamp_k, q, scalar);
-            kernel_load_unif(&fast_mul_scalar_clamp_k, q, mn);
-            kernel_load_unif(&fast_mul_scalar_clamp_k, q, mx);
-        }
+    kernel_reset_unifs(&fast_mul_scalar_clamp_k);
+    for (int q = 0; q < NUM_QPUS; q++) {
+        kernel_load_unif(&fast_mul_scalar_clamp_k, q, NUM_QPUS * SIMD_WIDTH);
+        kernel_load_unif(&fast_mul_scalar_clamp_k, q, img->size * img->fmt);
+        kernel_load_unif(&fast_mul_scalar_clamp_k, q, q);
 
-        kernel_execute(&fast_mul_scalar_clamp_k);
-    } else {
-        for (u32 i = 0; i < img->size * img->fmt; i++) {
-            float x = img->data[i] * scalar;
-            if (x > mx) x = mx;
-            if (x < mn) x = mn;
-            img->data[i] = x;
-        }
+        kernel_load_unif(&fast_mul_scalar_clamp_k, q, TO_BUS(img->data + q * SIMD_WIDTH));
+        kernel_load_unif(&fast_mul_scalar_clamp_k, q, scalar);
+        kernel_load_unif(&fast_mul_scalar_clamp_k, q, mn);
+        kernel_load_unif(&fast_mul_scalar_clamp_k, q, mx);
     }
+
+    kernel_execute(&fast_mul_scalar_clamp_k);
 
     mmu_flush_dcache();
 }
