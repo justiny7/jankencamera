@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-extern uint32_t bw_norm_gw_accum[128];
+extern uint32_t bw_norm_gw_accum[154];
 
 
 #ifdef __cplusplus

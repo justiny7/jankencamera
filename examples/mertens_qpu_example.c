@@ -121,7 +121,7 @@ void main() {
     mertens_init(&m, imgs, N);
 
     now("mertens\n");
-    Image* res = mertens_fuse(&m);
+    Image* res = mertens_fuse(&m, 0);
     elapsed();
 
     printk("write ppm...\n");

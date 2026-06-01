@@ -96,7 +96,10 @@ typedef struct {
     uint32_t buffer_size;
 } UnicamConfig;
 
-bool unicam_init();
+bool unicam_irq_pending();
+void unicam_irq_handler();
+
+bool unicam_init(bool install_handler);
 void unicam_deinit();
 bool unicam_configure(UnicamConfig* cfg);
 bool unicam_start();

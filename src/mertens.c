@@ -466,7 +466,7 @@ static uint32_t last_t;
 #define elapsed()
 #endif
 
-Image* mertens_fuse(MertensExposure* m) {
+Image* mertens_fuse(MertensExposure* m, Image* out) {
     now("normalizing...\n");
     for (u32 i = 0; i < m->num_imgs; i++) {
         img_mul_scalar_clamp(&m->imgs[i], 1.f / m->pmax, 0.f, 1.f);
@@ -499,18 +499,18 @@ Image* mertens_fuse(MertensExposure* m) {
     blend_pyramids(m, &blended, laplacians, weights);
     elapsed();
 
-    Image* out = img_kmalloc();
+    Image* out_qpu = img_kmalloc();
     now("collapsing...\n");
-    collapse_pyramid(m, out, blended);
+    collapse_pyramid(m, out_qpu, blended);
     elapsed();
 
     now("scaling back...\n");
-    img_mul_scalar_clamp(out, (float) m->pmax, 0.f, (float) m->pmax);
+    img_mul_scalar_clamp(out_qpu, (float) m->pmax, 0.f, (float) m->pmax);
     elapsed();
 
     // copy to CPU
-    Image* out_cpu = img_kmalloc();
-    img_copy(out_cpu, out);
+    if (!out) out = img_kmalloc();
+    img_copy(out, out_qpu);
 
     printk("Data arena usage: %d bytes (%f MiB)\n",
             data_arena.size, 1.f * data_arena.size / (1024 * 1024));
@@ -524,11 +524,15 @@ Image* mertens_fuse(MertensExposure* m) {
     kfree(laplacians);
     kfree(weights);
     kfree(blended);
-    kfree(out);
+    kfree(out_qpu);
 
     arena_dealloc_to(&data_arena, 0);
     arena_dealloc_to(&temp_arena, 0);
 
-    return out_cpu;
+    for (u32 i = 0; i < m->num_imgs; i++) {
+        img_mul_scalar_clamp(&m->imgs[i], m->pmax, 0.f, m->pmax);
+    }
+
+    return out;
 }
 

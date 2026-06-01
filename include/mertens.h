@@ -16,6 +16,6 @@ typedef struct {
 } MertensExposure;
 
 void mertens_init(MertensExposure* m, Image* imgs, u32 num_imgs);
-Image* mertens_fuse(MertensExposure* m);
+Image* mertens_fuse(MertensExposure* m, Image* out);
 
 #endif

@@ -17,6 +17,8 @@
 // min 250ms delay between consecutive shots
 #define CAM_MIN_TS_DELAY        200000
 
+#define VERBOSE 0
+
 static CameraConfig g_config;
 static bool g_streaming = false;
 static uint32_t g_sequence = 0;
@@ -47,8 +49,8 @@ static float dig_reg_to_gain(uint16_t value) {
     return value / 256.f;
 }
 
-bool camera_init() {
-    if (!unicam_init()) {
+bool camera_init(bool install_handler) {
+    if (!unicam_init(install_handler)) {
         printk("camera: unicam init failed\n");
         return false;
     }
@@ -107,8 +109,10 @@ bool camera_set_format(uint32_t width, uint32_t height, CameraFormat fmt) {
         return false;
     }
 
+#if VERBOSE
     printk("camera: format %dx%d stride=%d\n",
            g_config.width, g_config.height, g_config.stride);
+#endif
     return true;
 }
 
@@ -297,8 +301,10 @@ bool camera_set_gain(float gain) {
         dig_gain = gain / MAX_ANALOG_GAIN;
     }
 
+#if VERBOSE
     printk("gain: %f\tana gain: %f\tdig gain: %f\n",
             gain, ana_gain, dig_gain);
+#endif
     return camera_set_analog_gain(ana_gain) &&
         camera_set_digital_gain(dig_gain);
 }

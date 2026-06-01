@@ -45,6 +45,7 @@ CameraBuffer* camera_buffer_get_ready() {
 
     // disable interrupts
     asm volatile ("cpsid i");
+    prefetch_flush();
 
     // swap ready idx with processing idx
     CameraBuffer* res = g_buf_ptrs[g_ready_idx];
@@ -54,6 +55,7 @@ CameraBuffer* camera_buffer_get_ready() {
 
     // enable interrupts
     asm volatile ("cpsie i");
+    prefetch_flush();
 
     return res;
 }
@@ -62,9 +64,13 @@ bool camera_buffer_save_ready(CameraBuffer* buf, uint32_t size) {
 
     // copy ready buffer into given buffer (TODO: optimize with DMA?)
     asm volatile ("cpsid i");
+    prefetch_flush();
+
     memcpy(buf, g_buf_ptrs[g_ready_idx], size);
     mmu_flush_dcache();
+
     asm volatile ("cpsie i");
+    prefetch_flush();
 
     return true;
 }

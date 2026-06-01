@@ -42,7 +42,7 @@ typedef struct {
     CameraShot shot;
 } CameraFrame;
 
-bool camera_init();
+bool camera_init(bool install_handler);
 bool camera_set_format(uint32_t width, uint32_t height, CameraFormat fmt);
 CameraConfig camera_get_config();
 

@@ -4,6 +4,7 @@
 #include "lib.h"
 #include "fat.h"
 #include "mmu.h"
+#include "unicam.h"
 
 #include "kernel.h"
 #include "fast_img_grayscale.h"
@@ -72,7 +73,7 @@ void img_kernel_init() {
     kernel_init(&fast_fb_to_img_k, NUM_QPUS, 7,
             fast_fb_to_img, sizeof(fast_fb_to_img));
 
-    kernel_init(&bw_norm_gw_accum_k, NUM_QPUS, 10,
+    kernel_init(&bw_norm_gw_accum_k, NUM_QPUS, 12,
             bw_norm_gw_accum, sizeof(bw_norm_gw_accum));
     kernel_init(&gw_wb_k, NUM_QPUS, 8,
             gw_wb, sizeof(gw_wb));
@@ -224,14 +225,18 @@ void img_bw_norm_gray_world_wb(Image* img, u32 white_lvl, u32 black_lvl) {
 
     ////// black/white norm + accumulate sums for white balance
     float* accum[NUM_QPUS];
+    u32* cnts[NUM_QPUS];
     float diff = white_lvl - black_lvl;
     float pmax = pixel_max(img->depth);
     float mul = pmax / diff;
+    float gw_threshold = pmax * 0.90;
 
     kernel_reset_unifs(&bw_norm_gw_accum_k);
     for (u32 q = 0; q < NUM_QPUS; q++) {
         accum[q] = arena_alloc_align(&data_arena,
                 SIMD_WIDTH * sizeof(float), arena_align);
+        cnts[q] = arena_alloc_align(&data_arena,
+                SIMD_WIDTH * sizeof(u32), arena_align);
 
         kernel_load_unif(&bw_norm_gw_accum_k, q, SIMD_WIDTH);
         kernel_load_unif(&bw_norm_gw_accum_k, q, w);
@@ -241,25 +246,32 @@ void img_bw_norm_gray_world_wb(Image* img, u32 white_lvl, u32 black_lvl) {
 
         kernel_load_unif(&bw_norm_gw_accum_k, q, TO_BUS(img->data + q * w));
         kernel_load_unif(&bw_norm_gw_accum_k, q, TO_BUS(accum[q]));
+        kernel_load_unif(&bw_norm_gw_accum_k, q, TO_BUS(cnts[q]));
 
         kernel_load_unif(&bw_norm_gw_accum_k, q, ((float) black_lvl));
         kernel_load_unif(&bw_norm_gw_accum_k, q, diff);
         kernel_load_unif(&bw_norm_gw_accum_k, q, mul);
+        kernel_load_unif(&bw_norm_gw_accum_k, q, gw_threshold);
     }
 
     kernel_execute(&bw_norm_gw_accum_k);
 
     float avg[4] = { 0.f, 0.f, 0.f, 0.f };
+    u32 cnt[4] = { 0, 0, 0, 0 };
     for (int i = 0; i < NUM_QPUS; i++) {
         for (int j = 0; j < SIMD_WIDTH; j++) {
-            avg[get_bayer_channel(img, i * w + j)] += accum[i][j];
+            u32 c = get_bayer_channel(img, i * w + j);
+            avg[c] += accum[i][j];
+            cnt[c] += cnts[i][j];
         }
     }
 
-    float avg_mul = 4.f / img->size;
-    for (int i = 0; i < 4; i++) avg[i] *= avg_mul;
+    for (int i = 0; i < 4; i++) {
+        avg[i] /= max(cnt[i], 1.0);
+    }
 
     float g_avg = (avg[1] + avg[2]) / 2;
+    // float g_avg = (avg[0] + avg[1] + avg[2] + avg[3]) / 4.f;
     float* gains[2];
     for (int i = 0; i < 2; i++) {
         gains[i] = arena_alloc_align(&data_arena,

@@ -1,23 +1,28 @@
 .include <vc4.qinc>
 
-.set stride_x, ra0
-.set N_x, ra1
-.set stride_y, ra2
-.set N_y, ra3
-.set qpu_num, ra4
+.set stride_x,      ra0
+.set N_x,           ra1
+.set stride_y,      ra2
+.set N_y,           ra3
+.set qpu_num,       ra4
 
-.set img_in, rb0
-.set accum_out, rb1
+.set img_in,        rb0
+.set accum_out,     rb1
+.set cnt_out,       rb2
 
-.set black_lvl, ra5
-.set diff, ra6
-.set mul, ra7
+.set black_lvl,     ra5
+.set diff,          ra6
+.set mul,           ra7
+.set gw_threshold,  ra8
 
-.set loop_x, rb2
-.set loop_y, rb3
-.set base_row, ra8
+.set loop_x,        rb3
+.set loop_y,        rb4
+.set base_row,      ra9
 
-.set img_in_cpy, ra9
+.set img_in_cpy,    ra10
+
+.set accum,         ra11
+.set cnt,           ra12
 
 .macro mem_to_vpm_vec16, addr_reg, offset
     # read 1 row of length 16 at VPM row [offset]
@@ -71,16 +76,18 @@ mov qpu_num, unif
 
 mov img_in, unif
 mov accum_out, unif
+mov cnt_out, unif
 
 mov black_lvl, unif
 mov diff, unif
 mov mul, unif
+mov gw_threshold, unif
 
 mov loop_y, qpu_num
 shl base_row, qpu_num, 2
 
-# let r3 be accum register
-mov r3, 0
+mov accum, 0
+mov cnt, 0
 
 # skip num_qpus rows
 :yloop
@@ -97,7 +104,9 @@ mov r3, 0
         fmin r1, r1, diff
         fmul r1, r1, mul
 
-        fadd r3, r3, r1
+        fmin.setf -, gw_threshold, r1
+        fadd.ifc accum, accum, r1
+        add.ifc cnt, cnt, 1
 
         # write out black-level subbed img_in
         reg_to_vpm_vec16 r1, 0
@@ -125,8 +134,10 @@ mov r3, 0
     nop
     nop
 
-reg_to_vpm_vec16 r3, 0
+reg_to_vpm_vec16 accum, 0
 vpm_to_mem_vec16 accum_out, 0
+reg_to_vpm_vec16 cnt, 0
+vpm_to_mem_vec16 cnt_out, 0
 
 nop; thrend
 nop

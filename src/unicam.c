@@ -19,6 +19,7 @@
 
 static UnicamConfig g_cfg;
 static bool g_active;
+static volatile bool g_frame_waiting;
 
 #define SWITCH_DMA_BUF(addr) \
     do { \
@@ -82,39 +83,40 @@ static void stop_cam_clock() {
     mem_barrier_dsb();
 }
 
-volatile bool g_frame_waiting;
-void __attribute__((interrupt("IRQ"))) unicam_irq_handler() {
-    // static uint32_t lst_t;
-    // check pending interrupt on CAM1
-    if (GET32(IRQ_PENDING_2) & (1U << (CAM1_INT - 32))) {
-        if (!g_active) return;
+bool unicam_irq_pending() {
+    return GET32(IRQ_PENDING_2) & (1U << (CAM1_INT - 32));
+}
+void unicam_irq_handler() {
+    if (!g_active) return;
 
-        mem_barrier_dsb();
-        uint32_t sta = GET32(UNICAM_REG(UNICAM_STA));
-        uint32_t ista = GET32(UNICAM_REG(UNICAM_ISTA));
+    mem_barrier_dsb();
+    uint32_t sta = GET32(UNICAM_REG(UNICAM_STA));
+    uint32_t ista = GET32(UNICAM_REG(UNICAM_ISTA));
 
-        // clear interrupts
-        PUT32(UNICAM_REG(UNICAM_STA), sta);
-        PUT32(UNICAM_REG(UNICAM_ISTA), ista);
+    // clear interrupts
+    PUT32(UNICAM_REG(UNICAM_STA), sta);
+    PUT32(UNICAM_REG(UNICAM_ISTA), ista);
 
-        if (!(sta & (UNICAM_IS | UNICAM_PI0))) return;
+    if (!(sta & (UNICAM_IS | UNICAM_PI0))) return;
 
-        // on frame end interrupt, advance + update DMA buffer
-        if ((ista & UNICAM_FEI) || (sta & UNICAM_PI0)) {
-            CameraBuffer* buf = camera_buffer_advance(g_frame_waiting);
-            SWITCH_DMA_BUF(buf->buf);
-            g_frame_waiting = false;
+    // on frame end interrupt, advance + update DMA buffer
+    if ((ista & UNICAM_FEI) || (sta & UNICAM_PI0)) {
+        CameraBuffer* buf = camera_buffer_advance(g_frame_waiting);
+        SWITCH_DMA_BUF(buf->buf);
+        g_frame_waiting = false;
+        mmu_flush_dcache();
+    }
 
-            // if (lst_t != 0) printk("i %d\n", sys_timer_get_usec() - lst_t);
-            // lst_t = sys_timer_get_usec();
-            mmu_flush_dcache();
-        }
+    mem_barrier_dsb();
+}
 
-        mem_barrier_dsb();
+static void __attribute__((interrupt("IRQ"))) default_unicam_irq_handler() {
+    if (unicam_irq_pending()) {
+        unicam_irq_handler();
     }
 }
 
-bool unicam_init() {
+bool unicam_init(bool install_handler) {
     if (!set_power(true)) {
         return false;
     }
@@ -126,8 +128,10 @@ bool unicam_init() {
     mem_barrier_dsb();
 
     // install interrupt handler
-    extern uint32_t irq_ptr;
-    irq_ptr = (uint32_t) unicam_irq_handler;
+    if (install_handler) {
+        extern uint32_t irq_ptr;
+        irq_ptr = (uint32_t) default_unicam_irq_handler;
+    }
 
     return true;
 }
