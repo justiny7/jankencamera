@@ -6,6 +6,7 @@
 #include "uart.h"
 #include "unicam.h"
 #include "mertens.h"
+#include "fat.h"
 
 #define FB_WIDTH  640
 #define FB_HEIGHT 480
@@ -21,20 +22,22 @@ typedef enum {
     MERTENS,
 } Mode;
 
-volatile static Mode cur_mode = STREAMING;
+static volatile Mode cur_mode = STREAMING;
 
 static uint32_t cur_expos = 20000;
 static float cur_gain = 4.0;
 
 // streaming settings
-static bool settings_change;
+static volatile bool settings_change;
 
 // mertens settings
 static uint32_t mertens_expos[N] = { 5000, 10000, 20000 };
 static float mertens_gain[N] = { 4.0, 4.0, 8.0 };
-static bool mertens_launch;
+static volatile bool mertens_launch;
+static volatile bool mertens_save;
 static uint32_t mertens_change;
 static uint32_t mertens_cur_img;
+static uint32_t mertens_save_idx;
 static void __attribute__((interrupt("IRQ"))) irq_handler() {
     if (unicam_irq_pending()) {
         unicam_irq_handler();
@@ -44,14 +47,20 @@ static void __attribute__((interrupt("IRQ"))) irq_handler() {
             if (cur_mode == STREAMING) {
                 switch (c) {
                     case 'w':
-                        if (cur_expos < 1000000) {
+                        if (cur_expos < 10000) {
+                            cur_expos += 1000;
+                            settings_change = true;
+                        } else if (cur_expos < 1000000) {
                             cur_expos += 5000;
                             settings_change = true;
                         }
                         break;
                     case 's':
-                        if (cur_expos >= 5000) {
+                        if (cur_expos > 10000) {
                             cur_expos -= 5000;
+                            settings_change = true;
+                        } else if (cur_expos > 1000) {
+                            cur_expos -= 1000;
                             settings_change = true;
                         }
                         break;
@@ -93,6 +102,8 @@ static void __attribute__((interrupt("IRQ"))) irq_handler() {
                         cur_mode = MERTENS;
                         mertens_launch = true;
                         break;
+                    case 'q':
+                        rpi_reset();
                     default:
                         break;
                 }
@@ -118,6 +129,8 @@ static void __attribute__((interrupt("IRQ"))) irq_handler() {
                         settings_change = true;
                         mertens_change = 0;
                         break;
+                    case 's':
+                        mertens_save = true;
                     default:
                         break;
                 }
@@ -137,6 +150,7 @@ void main() {
     extern uint32_t irq_ptr;
     irq_ptr = (uint32_t) irq_handler;
 
+    fat_init();
     uart_flush_tx();
     uart_clear_fifos();
     uart_enable_rx_interrupts();
@@ -204,6 +218,7 @@ void main() {
             }
         } else {
             if (mertens_launch) {
+                uart_disable_interrupts();
                 for (uint32_t i = 0; i < N; i++) {
                     shots[i].exposure = mertens_expos[i];
                     shots[i].gain = mertens_gain[i];
@@ -238,6 +253,7 @@ void main() {
 
                 mertens_launch = false;
                 mertens_change = 0;
+                uart_enable_rx_interrupts();
             }
 
             if (mertens_change) {
@@ -245,6 +261,27 @@ void main() {
                 img_write_framebuffer(&imgs[mertens_cur_img], display_get_buffer());
                 display_swap();
                 mertens_change = false;
+            }
+
+            if (mertens_save) {
+                uart_disable_interrupts();
+                for (uint32_t i = 0; i < N; i++) {
+                    printk("saving in_%d_%d.ppm...\n", i, mertens_save_idx);
+                    char* fn = "IN_x_x  PPM";
+                    fn[3] = '0' + i;
+                    fn[5] = '0' + mertens_save_idx;
+                    img_save_ppm(&imgs[i], fn);
+                }
+                {
+                    printk("saving out_%d.ppm...\n", mertens_save_idx);
+                    char* fn = "OUT_x   PPM";
+                    fn[4] = '0' + mertens_save_idx;
+                    img_save_ppm(&imgs[N], fn);
+                }
+                printk("done!\n");
+                mertens_save = false;
+                mertens_save_idx++;
+                uart_enable_rx_interrupts();
             }
         }
     }
