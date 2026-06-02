@@ -113,15 +113,18 @@ static void __attribute__((interrupt("IRQ"))) irq_handler() {
                     case '2':
                     case '3':
                     case '4':
+                    case '5':
+                    case '6':
+                    case '7':
                         mertens_cur_img = c - '0' - 1;
                         mertens_change = true;
                         break;
                     case 'a':
-                        mertens_cur_img = (mertens_cur_img + N) % (N + 1);
+                        mertens_cur_img = (mertens_cur_img + N * 2) % (N * 2 + 1);
                         mertens_change = true;
                         break;
                     case 'd':
-                        mertens_cur_img = (mertens_cur_img + 1) % (N + 1);
+                        mertens_cur_img = (mertens_cur_img + 1) % (N * 2 + 1);
                         mertens_change = true;
                         break;
                     case 'q':
@@ -193,7 +196,7 @@ void main() {
     img_kernel_init();
     CameraFrame frame;
     Image* img = img_kmalloc();
-    Image* imgs = img_kmalloc_n(N + 1);
+    Image* imgs = img_kmalloc_n(N * 2 + 1);
     while (1) {
         if (cur_mode == STREAMING) {
             if (camera_capture_frame(&frame)) {
@@ -237,14 +240,15 @@ void main() {
                 printk("processing shots...\n");
                 for (uint32_t i = 0; i < N; i++) {
                     img_init_frame(&imgs[i], &frames[i]);
-                    img_bw_norm_gray_world_wb(&imgs[i], 1023, 64);
-                    img_debayer_fast(&imgs[i], 0, true);
+                    img_copy(&imgs[i + N], &imgs[i]);
+                    img_bw_norm_gray_world_wb(&imgs[i + N], 1023, 64);
+                    img_debayer_fast(&imgs[i + N], 0, true);
                 }
 
                 printk("performing exposure fusion...\n");
                 MertensExposure m;
-                mertens_init(&m, imgs, N);
-                mertens_fuse(&m, &imgs[N]);
+                mertens_init(&m, imgs + N, N);
+                mertens_fuse(&m, &imgs[N * 2]);
 
                 mertens_cur_img = 0;
                 printk("displaying frame %d\n", mertens_cur_img);
@@ -266,17 +270,24 @@ void main() {
             if (mertens_save) {
                 uart_disable_interrupts();
                 for (uint32_t i = 0; i < N; i++) {
+                    printk("saving bay_%d_%d.ppm...\n", i, mertens_save_idx);
+                    char* fn = "BAY_x_x PPM";
+                    fn[4] = '0' + i;
+                    fn[6] = '0' + mertens_save_idx;
+                    img_save_ppm(&imgs[i], fn);
+                }
+                for (uint32_t i = 0; i < N; i++) {
                     printk("saving in_%d_%d.ppm...\n", i, mertens_save_idx);
                     char* fn = "IN_x_x  PPM";
                     fn[3] = '0' + i;
                     fn[5] = '0' + mertens_save_idx;
-                    img_save_ppm(&imgs[i], fn);
+                    img_save_ppm(&imgs[i + N], fn);
                 }
                 {
                     printk("saving out_%d.ppm...\n", mertens_save_idx);
                     char* fn = "OUT_x   PPM";
                     fn[4] = '0' + mertens_save_idx;
-                    img_save_ppm(&imgs[N], fn);
+                    img_save_ppm(&imgs[N * 2], fn);
                 }
                 printk("done!\n");
                 mertens_save = false;
