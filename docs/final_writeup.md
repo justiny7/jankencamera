@@ -126,7 +126,7 @@ And here is the PSNR/SSIM comparison against the Mac baseline for the final outp
     - However, at some point the cores are still stuck waiting for the TMU (I verified this by adding dummy operations in the kernels, and they didn't affect the runtime, meaning that the cores had extra time to perform those operations while waiting on the TMU)
     - The VideoCore IV memory bandwidth isn't great, so this is just a hardware limitation on this resource-constrained device
 - Overall, adherence to the baseline was very good throughout the entire process
-    - In terms of correctness, PSNR never dipped below 50 and SSIM never dipped below 0.99, meaning that the images were always almost identical to the baseline
+    - PSNR never dipped below 50 and SSIM never dipped below 0.99, meaning that the images were always almost identical to the baseline
 - (Not shown in the tables) I tried using 16.16 fixed-point integers instead of floats, but ran into accuracy issues (not enough bits to store intermediate sums), and it didn't have a noticable impact on performance in cases where precision wasn't an issue
 - (Also not shown in the tables)  I tried different dynamic memory allocation schemes (buddy/slab allocator vs. bump allocator) to manage memory, but it also didn't end up making a huge difference
     - The bump allocator was slightly faster since I could mass allocate/free with a single pointer update, but the difference was insignificant compared to the actual algorithm runtimes (since I'd only allocate like once or a few times per algorithm) so I didn't include them in the tables
