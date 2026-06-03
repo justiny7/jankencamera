@@ -115,14 +115,18 @@ And here is the PSNR/SSIM comparison against the Mac baseline for the final outp
 #### Main takeaways
 - The slowest part of the pipeline is calculating Laplacian and Gaussian pyramids ("build pyramids" section of the Mertens table), so turning that into a GPU kernel made that piece of the pipeline ~3.2x faster
     - However, we didn't see the theoretical 12x speedup because the program was memory-bound
-- The Raspberry Pi Zero W uses a unified memory model, so the GPU and CPU actually see the same RAM. Therefore, I didn't have to copy memory between the CPU and GPU, which made the entire pipeline run another ~2 times faster (since the pipeline was previously very memory-bound)
+- The Raspberry Pi Zero W uses a unified memory model, so the GPU and CPU actually see the same RAM. Therefore, I didn't have to copy memory between the CPU and GPU, which made the entire pipeline run another ~2 times faster
     - With this, building pyramids went from ~8 seconds to ~1 second, an 8x speedup! (I'm speculating the rest is from memory overhead of waiting for TMU gathers)
     - Also sped up many other parts of the pipeline where I was needlessly copying data
 - Fusing kernels to increase arithmetic intensity
     - For example, I used to have three different functions for computing the saturation, exposedness, and contrast parts of the weight maps, but I fused them into two kernels (one performing saturation, exposedness, and turning the image into grayscale, the other performing a Laplacian convolution for contrast) so that I only have to load/store the image 4 times instead of 8 previously
     - I also fused black-level subtraction and white balancing into a single kernel for the same reason
+- In the end, what limited performance was programs being memory-bound
+    - Experimenting with DMA vs. TMU, I found that the TMU was generally faster because it's asynchronous, allowing the cores to perform arithmetic while it fetches the data (it only blocks if you request the data and it hasn't fetched it yet)
+    - However, at some point the cores are still stuck waiting for the TMU (I verified this by adding dummy operations in the kernels, and they didn't affect the runtime, meaning that the cores had extra time to perform those operations while waiting on the TMU)
+    - The VideoCore IV memory bandwidth isn't great, so this is just a hardware limitation on this resource-constrained device
 - Overall, adherence to the baseline was very good throughout the entire process
-    - PSNR never dipped below 50 and SSIM never dipped below 0.99, meaning that the images were always almost identical to the baseline
+    - In terms of correctness, PSNR never dipped below 50 and SSIM never dipped below 0.99, meaning that the images were always almost identical to the baseline
 - (Not shown in the tables) I tried using 16.16 fixed-point integers instead of floats, but ran into accuracy issues (not enough bits to store intermediate sums), and it didn't have a noticable impact on performance in cases where precision wasn't an issue
 - (Also not shown in the tables)  I tried different dynamic memory allocation schemes (buddy/slab allocator vs. bump allocator) to manage memory, but it also didn't end up making a huge difference
     - The bump allocator was slightly faster since I could mass allocate/free with a single pointer update, but the difference was insignificant compared to the actual algorithm runtimes (since I'd only allocate like once or a few times per algorithm) so I didn't include them in the tables
