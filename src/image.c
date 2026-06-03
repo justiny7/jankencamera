@@ -567,7 +567,7 @@ static u32 img_to_ppm(Image* img, uint8_t** buf) {
     *buf = p;
 
     *p++ = 'P';
-    *p++ = '6';
+    *p++ = (img->fmt == PIXEL_RGB ? '6' : '5');
     *p++ = '\n';
     write_digits(img->width, &p);
     *p++ = ' ';
