@@ -188,7 +188,7 @@ Here are two cases where the fusion turned out pretty well, and one case where i
 
 ### Conclusion
 
-The algorithm is very performant in effiency and accuracy, and does well when given well-aligned, clean input images. However, capturing good input images, especially with this specific camera module, is quite difficult and requires lots of tuning.
+The algorithm is very performant and accurate, and does well when given well-aligned, clean input images. However, capturing good input images, especially with this specific camera module, is quite difficult and requires lots of tuning.
 
 ---
 
