@@ -8,24 +8,8 @@ This is a bare-metal exposure fusion pipeline on a Raspberry Pi Zero W and IMX21
 
 ---
 
-## Proposal
-
-Check `docs/proposal.md`!
-
----
-
-## Checkpoint 1
-
-Check `docs/checkpoint_1` folder!
-
----
-
-## Checkpoint 2
-
-Check `docs/checkpoint_2` folder!
-
----
-
-## Final writeup
-
-Check `docs/final_writeup.md`!
+## CS348K Docs
+- [Proposal](docs/proposal.md)
+- [Checkpoint 1](docs/checkpoint_1)
+- [Checkpoint 2](docs/checkpoint_2)
+- [Final writeup](docs/final_writeup.md)
