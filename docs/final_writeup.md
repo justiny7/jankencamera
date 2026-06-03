@@ -131,7 +131,7 @@ And here is the PSNR/SSIM comparison against the Mac baseline for the final outp
 
 Mertens Exposure fusion is a little annoying in the sense that you need pixel-perfect alignment and cleanly-exposed images for it to perform well. Since my camera module isn't the greatest (and I had no case to keep it still), setting up a good shot was quite challenging.
 
-Here are a few cases where the fusion turned out pretty well:
+Here are two cases where the fusion turned out pretty well, and one case where it failed:
 
 <table>
   <tr>
@@ -154,13 +154,6 @@ Here are a few cases where the fusion turned out pretty well:
       </em>
     </td>
   </tr>
-
-  <tr>
-    <th>Frame 0</th>
-    <th>Frame 1</th>
-    <th>Frame 2</th>
-    <th>Mertens Output</th>
-  </tr>
   <tr>
     <td><img src="../results/coda_fence_window/frame0.png" width="200"></td>
     <td><img src="../results/coda_fence_window/frame1.png" width="200"></td>
@@ -174,13 +167,6 @@ Here are a few cases where the fusion turned out pretty well:
         and the background through the window.
       </em>
     </td>
-  </tr>
-
-  <tr>
-    <th>Frame 0</th>
-    <th>Frame 1</th>
-    <th>Frame 2</th>
-    <th>Mertens Output</th>
   </tr>
   <tr>
     <td><img src="../results/mac_window/frame0.png" width="200"></td>
