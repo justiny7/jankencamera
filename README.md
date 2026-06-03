@@ -28,4 +28,4 @@ Check `docs/checkpoint_2` folder!
 
 ## Final writeup
 
-Check `docs/final_writeup` folder!
+Check `docs/final_writeup.md`!
