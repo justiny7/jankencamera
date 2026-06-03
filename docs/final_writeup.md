@@ -179,7 +179,8 @@ Here are two cases where the fusion turned out pretty well, and one case where i
       <em>
         At higher exposures, lights bleed outward and cover more area than
         lower exposures, causing misalignment between the images (e.g., the
-        reflected light source appears larger in the higher-exposure frames).
+        reflected light source appears larger in the higher-exposure frames,
+        and the trees aren't blended well).
       </em>
     </td>
   </tr>
