@@ -125,7 +125,7 @@ And here is the PSNR/SSIM comparison against the Mac baseline for the final outp
     - PSNR never dipped below 50 and SSIM never dipped below 0.99, meaning that the images were always almost identical to the baseline
 - (Not shown in the tables) I tried using 16.16 fixed-point integers instead of floats, but ran into accuracy issues (not enough bits to store intermediate sums), and it didn't have a noticable impact on performance in cases where precision wasn't an issue
 - (Also not shown in the tables)  I tried different dynamic memory allocation schemes (buddy/slab allocator vs. bump allocator) to manage memory, but it also didn't end up making a huge difference
-    - The bump allocator was slightly faster since I could mass allocate/free with a single pointer update, but the difference wasn insignificant compared to the actual algorithm runtimes (since I'd only allocate like once or a few times per algorithm) so I didn't include them in the tables
+    - The bump allocator was slightly faster since I could mass allocate/free with a single pointer update, but the difference was insignificant compared to the actual algorithm runtimes (since I'd only allocate like once or a few times per algorithm) so I didn't include them in the tables
 
 ### Qualitative Analysis
 
