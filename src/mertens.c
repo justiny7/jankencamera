@@ -236,12 +236,12 @@ static void compute_weight_map(Image* out, const Image* in) {
     u32 w = in->width;
     u32 h = in->height;
     float* row_border[2] = {
-        kmalloc(w * sizeof(float)),
-        kmalloc(w * sizeof(float)),
+        kvmalloc(w * sizeof(float)),
+        kvmalloc(w * sizeof(float)),
     };
     float* col_border[2] = {
-        kmalloc(h * sizeof(float)),
-        kmalloc(h * sizeof(float)),
+        kvmalloc(h * sizeof(float)),
+        kvmalloc(h * sizeof(float)),
     };
 
     const u32 ys[2] = { 0, h - 1 };
@@ -316,8 +316,8 @@ static void compute_weight_map(Image* out, const Image* in) {
     }
 
     for (u32 i = 0; i < 2; i++) {
-        kfree(row_border[i]);
-        kfree(col_border[i]);
+        kvfree(row_border[i]);
+        kvfree(col_border[i]);
     }
 
     arena_dealloc_to(&temp_arena, temp_sz);
@@ -374,7 +374,7 @@ static void build_laplacian_pyramid(MertensExposure* m, Image** out, const Image
     pyr[m->num_lvls - 1].data = arena_alloc_align(&data_arena, img_nbytes(&temp), arena_align);
     img_copy(&pyr[m->num_lvls - 1], &gauss[m->num_lvls - 1]);
 
-    kfree(gauss);
+    kvfree(gauss);
 
     *out = pyr;
     arena_dealloc_to(&temp_arena, temp_sz);
@@ -484,8 +484,8 @@ Image* mertens_fuse(MertensExposure* m, Image* out) {
     normalize_weight_maps(m, weight_maps);
     elapsed();
 
-    Image** laplacians = kmalloc(m->num_imgs * sizeof(Image*));
-    Image** weights = kmalloc(m->num_imgs * sizeof(Image*));
+    Image** laplacians = kvmalloc(m->num_imgs * sizeof(Image*));
+    Image** weights = kvmalloc(m->num_imgs * sizeof(Image*));
     now("building pyramids...\n");
     for (u32 i = 0; i < m->num_imgs; i++) {
         build_laplacian_pyramid(m, &laplacians[i], &m->imgs[i]);
@@ -516,15 +516,15 @@ Image* mertens_fuse(MertensExposure* m, Image* out) {
             data_arena.size, 1.f * data_arena.size / (1024 * 1024));
 
     // free everything
-    kfree(weight_maps);
+    kvfree(weight_maps);
     for (u32 i = 0; i < m->num_imgs; i++) {
-        kfree(laplacians[i]);
-        kfree(weights[i]);
+        kvfree(laplacians[i]);
+        kvfree(weights[i]);
     }
-    kfree(laplacians);
-    kfree(weights);
-    kfree(blended);
-    kfree(out_qpu);
+    kvfree(laplacians);
+    kvfree(weights);
+    kvfree(blended);
+    kvfree(out_qpu);
 
     arena_dealloc_to(&data_arena, 0);
     arena_dealloc_to(&temp_arena, 0);

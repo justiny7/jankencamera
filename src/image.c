@@ -88,7 +88,7 @@ Image* img_kmalloc() {
 }
 Image* img_kmalloc_n(u32 n) {
     u32 sz = n * sizeof(Image);
-    Image* res = (Image*) kmalloc(sz);
+    Image* res = (Image*) kvmalloc(sz);
     memset(res, 0, sz);
     return res;
 }
@@ -112,7 +112,7 @@ void img_init(Image* img, u32 width, u32 height, u32 depth, PixelFormat fmt) {
     img->is_bayer = false;
 
     if (!img->data) {
-        img->data = kmalloc(img->size * img->fmt * sizeof(float));
+        img->data = kvmalloc(img->size * img->fmt * sizeof(float));
         img->qpu_mem = false;
     } else {
         img->qpu_mem = true;
@@ -162,7 +162,7 @@ void img_init_frame(Image* img, CameraFrame* frame) {
             frame->buf->buf, cfg.bayer_fmt);
 }
 void img_free(Image* img) {
-    if (!img->qpu_mem) kfree(img->data);
+    if (!img->qpu_mem) kvfree(img->data);
     img->data = NULL;
     img->width = img->height = img->size = 0;
 }
@@ -342,7 +342,7 @@ void img_debayer(Image* img) {
     assert(img->is_bayer, "debayer: image must be bayer");
     assert(img->fmt == PIXEL_GRAY, "debayer: image must be gray");
 
-    float* new_data = kmalloc(img->size * 3 * sizeof(float));
+    float* new_data = kvmalloc(img->size * 3 * sizeof(float));
     for (u32 y = 0; y < img->height; y++) {
         for (u32 x = 0; x < img->width; x++) {
             u32 i = y * img->width + x;
@@ -353,7 +353,7 @@ void img_debayer(Image* img) {
         }
     }
 
-    kfree(img->data);
+    kvfree(img->data);
     img->data = new_data;
     img->fmt = PIXEL_RGB;
     img->is_bayer = false;
@@ -429,7 +429,7 @@ void img_debayer_fast(Image* img, u32* fb, bool store_img) {
     }
 
     if (store_img) {
-        float* new_data = kmalloc(img->size * 3 * sizeof(float));
+        float* new_data = kvmalloc(img->size * 3 * sizeof(float));
 
         // 8-bit to whatever depth
         float conv = pmax / 255.f;
@@ -464,7 +464,7 @@ void img_debayer_fast(Image* img, u32* fb, bool store_img) {
 
         mmu_flush_dcache();
 
-        kfree(img->data);
+        kvfree(img->data);
         img->data = new_data;
         img->fmt = PIXEL_RGB;
         img->is_bayer = false;
@@ -563,7 +563,7 @@ static u32 img_to_ppm(Image* img, uint8_t** buf) {
         num_digits(pmax) +
         img_nbytes;
 
-    uint8_t* p = kmalloc(nbytes);
+    uint8_t* p = kvmalloc(nbytes);
     *buf = p;
 
     *p++ = 'P';
@@ -603,7 +603,7 @@ void img_save_ppm(Image* img, const char* filename) {
     u32 nbytes = img_to_ppm(img, &buf);
 
     fat_write_file(filename, buf, nbytes);
-    kfree(buf);
+    kvfree(buf);
 }
 void img_write_framebuffer(Image* img, u32* fb) {
     assert(img->depth == 8 || img->depth == 10,
